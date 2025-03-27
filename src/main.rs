@@ -380,8 +380,6 @@ impl App {
                     100 // If content fits in one screen, we're at 100%
                 };
                 
-                debug!("Progress: line {}/{} ({}%) - visible area: {}x{}, max scroll: {}", 
-                    current_line, total_lines, progress, visible_width, visible_height, max_scroll);
                 progress
             } else {
                 0

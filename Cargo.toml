@@ -1,0 +1,16 @@
+[package]
+name = "bookrat"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A TUI EPUB reader application"
+
+[dependencies]
+ratatui = "0.26.1"
+crossterm = "0.27.0"
+epub = "1.1.0"
+anyhow = "1.0.79"
+simplelog = "0.12.1"
+html2text = "0.2.1"
+regex = "1.10.3"
+log = "0.4"

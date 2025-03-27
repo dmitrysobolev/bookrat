@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
 };
 use simplelog::{Config, LevelFilter, WriteLogger};
@@ -232,6 +232,78 @@ impl App {
             debug!("Scrolling up to offset: {}", self.scroll_offset);
         }
     }
+
+    fn draw(&mut self, f: &mut ratatui::Frame) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(f.size());
+
+        let main_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(30),
+                Constraint::Percentage(70),
+            ])
+            .split(chunks[0]);
+
+        // Draw file list
+        let items: Vec<ListItem> = self
+            .epub_files
+            .iter()
+            .enumerate()
+            .map(|(i, file)| {
+                let content = Line::from(vec![Span::styled(
+                    file,
+                    Style::default().add_modifier(if i == self.selected {
+                        Modifier::REVERSED
+                    } else {
+                        Modifier::empty()
+                    }),
+                )]);
+                ListItem::new(content)
+            })
+            .collect();
+
+        let files = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("EPUB Files"))
+            .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+
+        f.render_stateful_widget(files, main_chunks[0], &mut self.list_state.clone());
+
+        // Draw content
+        let content = self
+            .current_content
+            .as_deref()
+            .unwrap_or("Select a file to view its content");
+        
+        let title = if self.current_epub.is_some() {
+            format!("Content (Chapter {}/{})", self.current_chapter + 1, self.total_chapters)
+        } else {
+            "Content".to_string()
+        };
+
+        let content = Paragraph::new(content)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: true })
+            .scroll((self.scroll_offset as u16, 0))
+            .style(Style::default().fg(Color::White));
+
+        f.render_widget(content, main_chunks[1]);
+
+        // Draw help bar
+        let help_text = match self.mode {
+            Mode::FileList => "j/k: Navigate | Enter: Select | Tab: Switch View | q: Quit",
+            Mode::Content => "j/k: Scroll | h/l: Change Chapter | Tab: Switch View | q: Quit",
+        };
+        let help = Paragraph::new(help_text)
+            .block(Block::default().borders(Borders::ALL))
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(help, chunks[1]);
+    }
 }
 
 fn main() -> Result<()> {
@@ -278,7 +350,7 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
     let mut last_tick = std::time::Instant::now();
 
     loop {
-        terminal.draw(|f| ui(f, app))?;
+        terminal.draw(|f| app.draw(f))?;
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
@@ -338,58 +410,4 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
             last_tick = std::time::Instant::now();
         }
     }
-}
-
-fn ui(f: &mut ratatui::Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Percentage(70),
-        ])
-        .split(f.size());
-
-    // File list
-    let items: Vec<ListItem> = app
-        .epub_files
-        .iter()
-        .enumerate()
-        .map(|(i, file)| {
-            let content = Line::from(vec![Span::styled(
-                file,
-                Style::default().add_modifier(if i == app.selected {
-                    Modifier::REVERSED
-                } else {
-                    Modifier::empty()
-                }),
-            )]);
-            ListItem::new(content)
-        })
-        .collect();
-
-    let files = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("EPUB Files"))
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
-
-    f.render_stateful_widget(files, chunks[0], &mut app.list_state.clone());
-
-    // Content view
-    let content = app
-        .current_content
-        .as_deref()
-        .unwrap_or("Select a file to view its content");
-    
-    let title = if app.current_epub.is_some() {
-        format!("Content (Chapter {}/{})", app.current_chapter + 1, app.total_chapters)
-    } else {
-        "Content".to_string()
-    };
-
-    let content = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(ratatui::widgets::Wrap { trim: true })
-        .scroll((app.scroll_offset as u16, 0))
-        .style(Style::default().fg(Color::White));
-
-    f.render_widget(content, chunks[1]);
 }

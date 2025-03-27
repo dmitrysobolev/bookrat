@@ -329,7 +329,7 @@ impl App {
             .collect();
 
         let files = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title("EPUB Files"))
+            .block(Block::default().borders(Borders::ALL).title("Books"))
             .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
 
         f.render_stateful_widget(files, main_chunks[0], &mut self.list_state.clone());

@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io::{stdout, BufReader},
     time::Duration,
+    path::Path,
 };
 
 use anyhow::Result;
@@ -56,6 +57,9 @@ impl App {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 if path.extension()?.to_str()? == "epub" {
+                    // Get filename without extension
+                    let filename = path.file_stem()?.to_string_lossy().to_string();
+                    // Store full path for internal use
                     Some(path.to_str()?.to_string())
                 } else {
                     None
@@ -64,7 +68,7 @@ impl App {
             .collect();
 
         let mut list_state = ListState::default();
-        list_state.select(Some(0));
+        list_state.select(None);
 
         let bookmarks = Bookmarks::load().unwrap_or_else(|e| {
             error!("Failed to load bookmarks: {}", e);
@@ -302,14 +306,17 @@ impl App {
                     .map(|b| b.last_read.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "Never".to_string());
                 
+                // Get filename without path and extension for display
+                let display_name = Path::new(file)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                
                 let content = Line::from(vec![
                     Span::styled(
-                        file,
-                        Style::default().add_modifier(if file == self.current_file.as_deref().unwrap_or("") {
-                            Modifier::REVERSED
-                        } else {
-                            Modifier::empty()
-                        }),
+                        display_name,
+                        Style::default(),
                     ),
                     Span::styled(
                         format!(" ({})", last_read),
@@ -451,6 +458,13 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
                         app.mode = if app.mode == Mode::FileList {
                             Mode::Content
                         } else {
+                            // When switching back to file list, restore selection to current file
+                            if let Some(current_file) = &app.current_file {
+                                if let Some(pos) = app.epub_files.iter().position(|f| f == current_file) {
+                                    app.selected = pos;
+                                    app.list_state.select(Some(pos));
+                                }
+                            }
                             Mode::FileList
                         };
                     }

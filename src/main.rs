@@ -348,14 +348,40 @@ impl App {
         
         let title = if self.current_epub.is_some() {
             let chapter_progress = if self.content_length > 0 {
-                // Get the visible area height
+                // Get the visible area width and height
+                let visible_width = main_chunks[1].width as usize;
                 let visible_height = main_chunks[1].height as usize;
-                // Calculate total scrollable lines (approximate)
-                let total_lines = self.current_content.as_ref().unwrap().lines().count();
+                
+                // Calculate total scrollable lines by counting actual content lines
+                let content = self.current_content.as_ref().unwrap();
+                let total_lines = content
+                    .lines()
+                    .filter(|line| !line.trim().is_empty()) // Skip empty lines
+                    .map(|line| {
+                        // Calculate how many terminal lines this content line will take
+                        (line.len() as f32 / visible_width as f32).ceil() as usize
+                    })
+                    .sum::<usize>();
+                
                 // Calculate current visible line based on scroll offset
                 let current_line = self.scroll_offset;
-                // Calculate percentage, ensuring it doesn't exceed 100%
-                let progress = ((current_line as f32 / total_lines as f32) * 100.0).min(100.0) as u32;
+                
+                // Calculate the maximum scroll position (when last line becomes visible at the bottom)
+                let max_scroll = if total_lines > visible_height {
+                    total_lines - visible_height
+                } else {
+                    0
+                };
+                
+                // Calculate percentage based on how far we've scrolled to the max position
+                let progress = if max_scroll > 0 {
+                    ((current_line as f32 / max_scroll as f32) * 100.0).min(100.0) as u32
+                } else {
+                    100 // If content fits in one screen, we're at 100%
+                };
+                
+                debug!("Progress: line {}/{} ({}%) - visible area: {}x{}, max scroll: {}", 
+                    current_line, total_lines, progress, visible_width, visible_height, max_scroll);
                 progress
             } else {
                 0

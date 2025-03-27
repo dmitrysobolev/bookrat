@@ -40,6 +40,7 @@ struct App {
     mode: Mode,
     bookmarks: Bookmarks,
     current_file: Option<String>,
+    content_length: usize,
 }
 
 #[derive(PartialEq)]
@@ -88,6 +89,7 @@ impl App {
             mode: Mode::FileList,
             bookmarks,
             current_file: None,
+            content_length: 0,
         }
     }
 
@@ -214,17 +216,21 @@ impl App {
                 if text.is_empty() {
                     warn!("Converted text is empty");
                     self.current_content = Some("No content available in this chapter.".to_string());
+                    self.content_length = 0;
                 } else {
                     debug!("Final text length: {} bytes", text.len());
                     self.current_content = Some(text);
+                    self.content_length = self.current_content.as_ref().unwrap().len();
                 }
             } else {
                 error!("Failed to get current chapter content");
                 self.current_content = Some("Error reading chapter content.".to_string());
+                self.content_length = 0;
             }
         } else {
             error!("No EPUB document loaded");
             self.current_content = Some("No EPUB document loaded.".to_string());
+            self.content_length = 0;
         }
     }
 
@@ -341,7 +347,20 @@ impl App {
             .unwrap_or("Select a file to view its content");
         
         let title = if self.current_epub.is_some() {
-            format!("Content (Chapter {}/{})", self.current_chapter + 1, self.total_chapters)
+            let chapter_progress = if self.content_length > 0 {
+                // Get the visible area height
+                let visible_height = main_chunks[1].height as usize;
+                // Calculate total scrollable lines (approximate)
+                let total_lines = self.current_content.as_ref().unwrap().lines().count();
+                // Calculate current visible line based on scroll offset
+                let current_line = self.scroll_offset;
+                // Calculate percentage, ensuring it doesn't exceed 100%
+                let progress = ((current_line as f32 / total_lines as f32) * 100.0).min(100.0) as u32;
+                progress
+            } else {
+                0
+            };
+            format!("Content (Chapter {}/{}) {}%", self.current_chapter + 1, self.total_chapters, chapter_progress)
         } else {
             "Content".to_string()
         };

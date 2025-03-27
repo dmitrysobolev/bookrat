@@ -1,3 +1,5 @@
+mod bookmark;
+
 use std::{
     fs::File,
     io::{stdout, BufReader},
@@ -24,6 +26,8 @@ use ratatui::{
 use simplelog::{Config, LevelFilter, WriteLogger};
 use regex;
 
+use crate::bookmark::{Bookmark, Bookmarks};
+
 struct App {
     epub_files: Vec<String>,
     selected: usize,
@@ -34,6 +38,8 @@ struct App {
     total_chapters: usize,
     scroll_offset: usize,
     mode: Mode,
+    bookmarks: Bookmarks,
+    current_file: Option<String>,
 }
 
 #[derive(PartialEq)]
@@ -60,6 +66,11 @@ impl App {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
 
+        let bookmarks = Bookmarks::load().unwrap_or_else(|e| {
+            error!("Failed to load bookmarks: {}", e);
+            Bookmarks::new()
+        });
+
         Self {
             epub_files,
             selected: 0,
@@ -70,6 +81,8 @@ impl App {
             total_chapters: 0,
             scroll_offset: 0,
             mode: Mode::FileList,
+            bookmarks,
+            current_file: None,
         }
     }
 
@@ -80,22 +93,47 @@ impl App {
             self.total_chapters = doc.get_num_pages();
             info!("Total chapters: {}", self.total_chapters);
             
-            // Skip the first chapter if it's just metadata
-            if self.total_chapters > 1 {
-                if doc.go_next().is_ok() {
-                    self.current_chapter = 1;
-                    info!("Skipped metadata page, moved to chapter 2");
-                } else {
-                    error!("Failed to move to next chapter");
+            // Try to load bookmark
+            if let Some(bookmark) = self.bookmarks.get_bookmark(path) {
+                info!("Found bookmark: chapter {}, offset {}", bookmark.chapter, bookmark.scroll_offset);
+                // Skip metadata page if needed
+                if bookmark.chapter > 0 {
+                    for _ in 0..bookmark.chapter {
+                        if doc.go_next().is_err() {
+                            error!("Failed to navigate to bookmarked chapter");
+                            break;
+                        }
+                    }
+                    self.current_chapter = bookmark.chapter;
+                    self.scroll_offset = bookmark.scroll_offset;
+                }
+            } else {
+                // Skip the first chapter if it's just metadata
+                if self.total_chapters > 1 {
+                    if doc.go_next().is_ok() {
+                        self.current_chapter = 1;
+                        info!("Skipped metadata page, moved to chapter 2");
+                    } else {
+                        error!("Failed to move to next chapter");
+                    }
                 }
             }
             
             self.current_epub = Some(doc);
+            self.current_file = Some(path.to_string());
             self.update_content();
-            self.scroll_offset = 0;
             self.mode = Mode::Content;
         } else {
             error!("Failed to load EPUB: {}", path);
+        }
+    }
+
+    fn save_bookmark(&mut self) {
+        if let Some(path) = &self.current_file {
+            self.bookmarks.update_bookmark(path, self.current_chapter, self.scroll_offset);
+            if let Err(e) = self.bookmarks.save() {
+                error!("Failed to save bookmark: {}", e);
+            }
         }
     }
 
@@ -193,6 +231,7 @@ impl App {
                     info!("Moving to next chapter: {}", self.current_chapter + 1);
                     self.update_content();
                     self.scroll_offset = 0;
+                    self.save_bookmark();
                 } else {
                     error!("Failed to move to next chapter");
                 }
@@ -210,6 +249,7 @@ impl App {
                     info!("Moving to previous chapter: {}", self.current_chapter + 1);
                     self.update_content();
                     self.scroll_offset = 0;
+                    self.save_bookmark();
                 } else {
                     error!("Failed to move to previous chapter");
                 }
@@ -223,6 +263,7 @@ impl App {
         if self.current_content.is_some() {
             self.scroll_offset = self.scroll_offset.saturating_add(1);
             debug!("Scrolling down to offset: {}", self.scroll_offset);
+            self.save_bookmark();
         }
     }
 
@@ -230,6 +271,7 @@ impl App {
         if self.current_content.is_some() {
             self.scroll_offset = self.scroll_offset.saturating_sub(1);
             debug!("Scrolling up to offset: {}", self.scroll_offset);
+            self.save_bookmark();
         }
     }
 
@@ -254,16 +296,26 @@ impl App {
         let items: Vec<ListItem> = self
             .epub_files
             .iter()
-            .enumerate()
-            .map(|(i, file)| {
-                let content = Line::from(vec![Span::styled(
-                    file,
-                    Style::default().add_modifier(if i == self.selected {
-                        Modifier::REVERSED
-                    } else {
-                        Modifier::empty()
-                    }),
-                )]);
+            .map(|file| {
+                let bookmark = self.bookmarks.get_bookmark(file);
+                let last_read = bookmark
+                    .map(|b| b.last_read.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| "Never".to_string());
+                
+                let content = Line::from(vec![
+                    Span::styled(
+                        file,
+                        Style::default().add_modifier(if file == self.current_file.as_deref().unwrap_or("") {
+                            Modifier::REVERSED
+                        } else {
+                            Modifier::empty()
+                        }),
+                    ),
+                    Span::styled(
+                        format!(" ({})", last_read),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
                 ListItem::new(content)
             })
             .collect();

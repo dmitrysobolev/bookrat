@@ -14,12 +14,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use epub::doc::EpubDoc;
-use html2text::from_read;
 use log::{debug, error, info, warn};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
@@ -27,7 +26,7 @@ use ratatui::{
 use simplelog::{Config, LevelFilter, WriteLogger};
 use regex;
 
-use crate::bookmark::{Bookmark, Bookmarks};
+use crate::bookmark::Bookmarks;
 
 struct App {
     epub_files: Vec<String>,
@@ -51,14 +50,12 @@ enum Mode {
 
 impl App {
     fn new() -> Self {
-        let epub_files = std::fs::read_dir(".")
+        let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
             .filter_map(|entry| {
                 let entry = entry.ok()?;
                 let path = entry.path();
                 if path.extension()?.to_str()? == "epub" {
-                    // Get filename without extension
-                    let filename = path.file_stem()?.to_string_lossy().to_string();
                     // Store full path for internal use
                     Some(path.to_str()?.to_string())
                 } else {
@@ -68,7 +65,11 @@ impl App {
             .collect();
 
         let mut list_state = ListState::default();
-        list_state.select(None);
+        // Select first book if available
+        let has_files = !epub_files.is_empty();
+        if has_files {
+            list_state.select(Some(0));
+        }
 
         let bookmarks = Bookmarks::load().unwrap_or_else(|e| {
             error!("Failed to load bookmarks: {}", e);
@@ -76,8 +77,8 @@ impl App {
         });
 
         Self {
-            epub_files,
-            selected: 0,
+            epub_files: epub_files.clone(),
+            selected: if has_files { 0 } else { 0 },
             current_content: None,
             list_state,
             current_epub: None,

@@ -41,6 +41,8 @@ struct App {
     bookmarks: Bookmarks,
     current_file: Option<String>,
     content_length: usize,
+    last_scroll_time: std::time::Instant,
+    scroll_speed: usize,
 }
 
 #[derive(PartialEq)]
@@ -90,6 +92,8 @@ impl App {
             bookmarks,
             current_file: None,
             content_length: 0,
+            last_scroll_time: std::time::Instant::now(),
+            scroll_speed: 1,
         }
     }
 
@@ -272,16 +276,42 @@ impl App {
 
     fn scroll_down(&mut self) {
         if self.current_content.is_some() {
-            self.scroll_offset = self.scroll_offset.saturating_add(1);
-            debug!("Scrolling down to offset: {}", self.scroll_offset);
+            // Check if we're scrolling continuously
+            let now = std::time::Instant::now();
+            if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
+                // Increase scroll speed up to a maximum
+                self.scroll_speed = (self.scroll_speed + 1).min(10);
+            } else {
+                // Reset scroll speed if there was a pause
+                self.scroll_speed = 1;
+            }
+            self.last_scroll_time = now;
+
+            // Apply scroll with current speed
+            self.scroll_offset = self.scroll_offset.saturating_add(self.scroll_speed);
+            let total_lines = self.current_content.as_ref().unwrap().lines().count();
+            debug!("Scrolling down to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
             self.save_bookmark();
         }
     }
 
     fn scroll_up(&mut self) {
         if self.current_content.is_some() {
-            self.scroll_offset = self.scroll_offset.saturating_sub(1);
-            debug!("Scrolling up to offset: {}", self.scroll_offset);
+            // Check if we're scrolling continuously
+            let now = std::time::Instant::now();
+            if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
+                // Increase scroll speed up to a maximum
+                self.scroll_speed = (self.scroll_speed + 1).min(10);
+            } else {
+                // Reset scroll speed if there was a pause
+                self.scroll_speed = 1;
+            }
+            self.last_scroll_time = now;
+
+            // Apply scroll with current speed
+            self.scroll_offset = self.scroll_offset.saturating_sub(self.scroll_speed);
+            let total_lines = self.current_content.as_ref().unwrap().lines().count();
+            debug!("Scrolling up to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
             self.save_bookmark();
         }
     }

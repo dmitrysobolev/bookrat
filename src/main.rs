@@ -43,6 +43,14 @@ struct App {
     content_length: usize,
     last_scroll_time: std::time::Instant,
     scroll_speed: usize,
+    p_tag_re: regex::Regex,
+    h_open_re: regex::Regex,
+    h_close_re: regex::Regex,
+    remaining_tags_re: regex::Regex,
+    multi_space_re: regex::Regex,
+    multi_newline_re: regex::Regex,
+    leading_space_re: regex::Regex,
+    line_leading_space_re: regex::Regex,
 }
 
 #[derive(PartialEq)]
@@ -53,6 +61,23 @@ enum Mode {
 
 impl App {
     fn new() -> Self {
+        let p_tag_re = regex::Regex::new(r"<p[^>]*>")
+            .expect("Failed to compile paragraph tag regex");
+        let h_open_re = regex::Regex::new(r"<h[1-6][^>]*>")
+            .expect("Failed to compile header open tag regex");
+        let h_close_re = regex::Regex::new(r"</h[1-6]>")
+            .expect("Failed to compile header close tag regex");
+        let remaining_tags_re = regex::Regex::new(r"<[^>]*>")
+            .expect("Failed to compile remaining tags regex");
+        let multi_space_re = regex::Regex::new(r" +")
+            .expect("Failed to compile multi space regex");
+        let multi_newline_re = regex::Regex::new(r"\n{3,}")
+            .expect("Failed to compile multi newline regex");
+        let leading_space_re = regex::Regex::new(r"^ +")
+            .expect("Failed to compile leading space regex");
+        let line_leading_space_re = regex::Regex::new(r"\n +")
+            .expect("Failed to compile line leading space regex");
+
         let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
             .filter_map(|entry| {
@@ -94,6 +119,14 @@ impl App {
             content_length: 0,
             last_scroll_time: std::time::Instant::now(),
             scroll_speed: 1,
+            p_tag_re,
+            h_open_re,
+            h_close_re,
+            remaining_tags_re,
+            multi_space_re,
+            multi_newline_re,
+            leading_space_re,
+            line_leading_space_re,
         }
     }
 
@@ -170,8 +203,7 @@ impl App {
                     .replace("&rsquo;", "\u{2019}"); // Closing single quote
 
                 // Second pass: Convert semantic HTML elements to plain text with proper formatting
-                let p_tag_re = regex::Regex::new(r"<p[^>]*>").unwrap();
-                let text = p_tag_re.replace_all(&text, "").to_string();
+                let text = self.p_tag_re.replace_all(&text, "").to_string();
                 
                 let text = text
                     .replace("</p>", "\n\n")
@@ -194,25 +226,17 @@ impl App {
                     .replace("</b>", "**");
 
                 // Handle headers
-                let h_open_re = regex::Regex::new(r"<h[1-6][^>]*>").unwrap();
-                let h_close_re = regex::Regex::new(r"</h[1-6]>").unwrap();
-                let text = h_open_re.replace_all(&text, "\n\n").to_string();
-                let text = h_close_re.replace_all(&text, "\n\n").to_string();
+                let text = self.h_open_re.replace_all(&text, "\n\n").to_string();
+                let text = self.h_close_re.replace_all(&text, "\n\n").to_string();
 
                 // Third pass: Remove any remaining HTML tags
-                let remaining_tags = regex::Regex::new(r"<[^>]*>").unwrap();
-                let text = remaining_tags.replace_all(&text, "").to_string();
+                let text = self.remaining_tags_re.replace_all(&text, "").to_string();
 
                 // Fourth pass: Clean up whitespace while preserving intentional formatting
-                let multi_space_re = regex::Regex::new(r" +").unwrap();
-                let multi_newline_re = regex::Regex::new(r"\n{3,}").unwrap();
-                let leading_space_re = regex::Regex::new(r"^ +").unwrap();
-                let line_leading_space_re = regex::Regex::new(r"\n +").unwrap();
-
-                let text = multi_space_re.replace_all(&text, " ").to_string();
-                let text = multi_newline_re.replace_all(&text, "\n\n").to_string();
-                let text = leading_space_re.replace_all(&text, "").to_string();
-                let text = line_leading_space_re.replace_all(&text, "\n").to_string();
+                let text = self.multi_space_re.replace_all(&text, " ").to_string();
+                let text = self.multi_newline_re.replace_all(&text, "\n\n").to_string();
+                let text = self.leading_space_re.replace_all(&text, "").to_string();
+                let text = self.line_leading_space_re.replace_all(&text, "\n").to_string();
                 let text = text.trim().to_string();
 
                 debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
@@ -275,7 +299,7 @@ impl App {
     }
 
     fn scroll_down(&mut self) {
-        if self.current_content.is_some() {
+        if let Some(content) = &self.current_content {
             // Check if we're scrolling continuously
             let now = std::time::Instant::now();
             if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
@@ -289,14 +313,14 @@ impl App {
 
             // Apply scroll with current speed
             self.scroll_offset = self.scroll_offset.saturating_add(self.scroll_speed);
-            let total_lines = self.current_content.as_ref().unwrap().lines().count();
+            let total_lines = content.lines().count();
             debug!("Scrolling down to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
             self.save_bookmark();
         }
     }
 
     fn scroll_up(&mut self) {
-        if self.current_content.is_some() {
+        if let Some(content) = &self.current_content {
             // Check if we're scrolling continuously
             let now = std::time::Instant::now();
             if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
@@ -310,7 +334,7 @@ impl App {
 
             // Apply scroll with current speed
             self.scroll_offset = self.scroll_offset.saturating_sub(self.scroll_speed);
-            let total_lines = self.current_content.as_ref().unwrap().lines().count();
+            let total_lines = content.lines().count();
             debug!("Scrolling up to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
             self.save_bookmark();
         }

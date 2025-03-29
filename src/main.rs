@@ -463,25 +463,46 @@ impl App {
         // Parse content and apply styling
         let mut styled_content = Vec::new();
         let mut is_italic = false;
+        let mut is_bold = false;
         
         for line in content.lines() {
             let mut current_line_spans = Vec::new();
             let mut current_text = String::new();
+            let mut chars = line.chars().peekable();
             
-            for c in line.chars() {
+            while let Some(c) = chars.next() {
                 if c == '_' {
                     // If we have accumulated text, add it with current style
                     if !current_text.is_empty() {
-                        let style = if is_italic {
-                            Style::default().fg(Color::White).italic()
-                        } else {
-                            Style::default().fg(Color::White)
-                        };
+                        let mut style = Style::default().fg(Color::White);
+                        if is_italic {
+                            style = style.italic();
+                        }
+                        if is_bold {
+                            style = style.bold();
+                        }
                         current_line_spans.push(Span::styled(current_text.clone(), style));
                         current_text.clear();
                     }
                     // Toggle italic state
                     is_italic = !is_italic;
+                } else if c == '*' && chars.peek() == Some(&'*') {
+                    // Skip the next * since we've already handled it
+                    chars.next();
+                    // If we have accumulated text, add it with current style
+                    if !current_text.is_empty() {
+                        let mut style = Style::default().fg(Color::White);
+                        if is_italic {
+                            style = style.italic();
+                        }
+                        if is_bold {
+                            style = style.bold();
+                        }
+                        current_line_spans.push(Span::styled(current_text.clone(), style));
+                        current_text.clear();
+                    }
+                    // Toggle bold state
+                    is_bold = !is_bold;
                 } else {
                     current_text.push(c);
                 }
@@ -489,11 +510,13 @@ impl App {
             
             // Add any remaining text with current style
             if !current_text.is_empty() {
-                let style = if is_italic {
-                    Style::default().fg(Color::White).italic()
-                } else {
-                    Style::default().fg(Color::White)
-                };
+                let mut style = Style::default().fg(Color::White);
+                if is_italic {
+                    style = style.italic();
+                }
+                if is_bold {
+                    style = style.bold();
+                }
                 current_line_spans.push(Span::styled(current_text, style));
             }
             

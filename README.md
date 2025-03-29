@@ -6,7 +6,7 @@ A terminal user interface (TUI) EPUB reader written in Rust.
 
 - Browse and select EPUB files from the current directory
 - Read EPUB content with proper formatting
-- Navigate between chapters
+- Navigate between parts
 - Scroll through content
 - Preserve text formatting (paragraphs, emphasis, quotes, etc.)
 
@@ -28,7 +28,7 @@ A terminal user interface (TUI) EPUB reader written in Rust.
 2. Place your EPUB files in the same directory as the executable
 3. Use the following controls:
    - `j`/`k`: Navigate file list or scroll content
-   - `h`/`l`: Navigate between chapters
+   - `h`/`l`: Navigate between parts
    - `Tab`: Switch between file list and content view
    - `Enter`: Select a file to read
    - `q`: Quit the application

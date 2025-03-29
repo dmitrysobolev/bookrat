@@ -455,7 +455,7 @@ impl App {
             } else {
                 0
             };
-            format!("Content (Chapter {}/{}) {}%", self.current_chapter + 1, self.total_chapters, chapter_progress)
+            format!("Part {}/{} | Progress: {}%", self.current_chapter + 1, self.total_chapters, chapter_progress)
         } else {
             "Content".to_string()
         };
@@ -533,7 +533,7 @@ impl App {
         // Draw help bar
         let help_text = match self.mode {
             Mode::FileList => "j/k: Navigate | Enter: Select | Tab: Switch View | q: Quit",
-            Mode::Content => "j/k: Scroll | h/l: Change Chapter | Tab: Switch View | q: Quit",
+            Mode::Content => "j/k: Scroll | h/l: Change Part | Tab: Switch View | q: Quit",
         };
         let help = Paragraph::new(help_text)
             .block(Block::default().borders(Borders::ALL))

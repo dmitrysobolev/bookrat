@@ -51,6 +51,7 @@ struct App {
     multi_newline_re: regex::Regex,
     leading_space_re: regex::Regex,
     line_leading_space_re: regex::Regex,
+    empty_lines_re: regex::Regex,
 }
 
 #[derive(PartialEq)]
@@ -77,6 +78,8 @@ impl App {
             .expect("Failed to compile leading space regex");
         let line_leading_space_re = regex::Regex::new(r"\n +")
             .expect("Failed to compile line leading space regex");
+        let empty_lines_re = regex::Regex::new(r"\n\s*\n\s*\n+")
+            .expect("Failed to compile empty lines regex");
 
         let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
@@ -127,6 +130,7 @@ impl App {
             multi_newline_re,
             leading_space_re,
             line_leading_space_re,
+            empty_lines_re,
         }
     }
 
@@ -237,6 +241,10 @@ impl App {
                 let text = self.multi_newline_re.replace_all(&text, "\n\n").to_string();
                 let text = self.leading_space_re.replace_all(&text, "").to_string();
                 let text = self.line_leading_space_re.replace_all(&text, "\n").to_string();
+                
+                // Fifth pass: Collapse multiple empty lines into a single one
+                let text = self.empty_lines_re.replace_all(&text, "\n\n");
+                
                 let text = text.trim().to_string();
 
                 debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());

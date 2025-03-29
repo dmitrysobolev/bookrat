@@ -53,6 +53,8 @@ struct App {
     line_leading_space_re: regex::Regex,
     empty_lines_re: regex::Regex,
     italic_re: regex::Regex,
+    css_page_re: regex::Regex,
+    css_body_re: regex::Regex,
 }
 
 #[derive(PartialEq)]
@@ -83,6 +85,10 @@ impl App {
             .expect("Failed to compile empty lines regex");
         let italic_re = regex::Regex::new(r"_([^_]+)_")
             .expect("Failed to compile italic regex");
+        let css_page_re = regex::Regex::new(r"@page\s*\{[^}]*\}")
+            .expect("Failed to compile CSS page rule regex");
+        let css_body_re = regex::Regex::new(r"body\s*\{[^}]*\}")
+            .expect("Failed to compile CSS body rule regex");
 
         let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
@@ -135,6 +141,8 @@ impl App {
             line_leading_space_re,
             empty_lines_re,
             italic_re,
+            css_page_re,
+            css_body_re,
         }
     }
 
@@ -209,6 +217,10 @@ impl App {
                     .replace("&rdquo;", "\u{201D}")  // Closing double quote
                     .replace("&lsquo;", "\u{2018}")  // Opening single quote
                     .replace("&rsquo;", "\u{2019}"); // Closing single quote
+
+                // Remove CSS rules
+                let text = self.css_page_re.replace_all(&text, "").to_string();
+                let text = self.css_body_re.replace_all(&text, "").to_string();
 
                 // Second pass: Convert semantic HTML elements to plain text with proper formatting
                 let text = self.p_tag_re.replace_all(&text, "").to_string();

@@ -18,7 +18,7 @@ use log::{debug, error, info, warn};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Terminal,
@@ -52,6 +52,7 @@ struct App {
     leading_space_re: regex::Regex,
     line_leading_space_re: regex::Regex,
     empty_lines_re: regex::Regex,
+    italic_re: regex::Regex,
 }
 
 #[derive(PartialEq)]
@@ -80,6 +81,8 @@ impl App {
             .expect("Failed to compile line leading space regex");
         let empty_lines_re = regex::Regex::new(r"\n\s*\n\s*\n+")
             .expect("Failed to compile empty lines regex");
+        let italic_re = regex::Regex::new(r"_([^_]+)_")
+            .expect("Failed to compile italic regex");
 
         let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
@@ -131,6 +134,7 @@ impl App {
             leading_space_re,
             line_leading_space_re,
             empty_lines_re,
+            italic_re,
         }
     }
 
@@ -228,6 +232,11 @@ impl App {
                     .replace("</strong>", "**")
                     .replace("<b>", "**")
                     .replace("</b>", "**");
+
+                // Handle text wrapped in underscores
+                let text = self.italic_re.replace_all(&text, |caps: &regex::Captures| {
+                    format!("_{}_", caps.get(1).unwrap().as_str())
+                }).to_string();
 
                 // Handle headers
                 let text = self.h_open_re.replace_all(&text, "\n\n").to_string();
@@ -451,11 +460,50 @@ impl App {
             "Content".to_string()
         };
 
-        let content = Paragraph::new(content)
+        // Parse content and apply styling
+        let mut styled_content = Vec::new();
+        let mut is_italic = false;
+        
+        for line in content.lines() {
+            let mut current_line_spans = Vec::new();
+            let mut current_text = String::new();
+            
+            for c in line.chars() {
+                if c == '_' {
+                    // If we have accumulated text, add it with current style
+                    if !current_text.is_empty() {
+                        let style = if is_italic {
+                            Style::default().fg(Color::White).italic()
+                        } else {
+                            Style::default().fg(Color::White)
+                        };
+                        current_line_spans.push(Span::styled(current_text.clone(), style));
+                        current_text.clear();
+                    }
+                    // Toggle italic state
+                    is_italic = !is_italic;
+                } else {
+                    current_text.push(c);
+                }
+            }
+            
+            // Add any remaining text with current style
+            if !current_text.is_empty() {
+                let style = if is_italic {
+                    Style::default().fg(Color::White).italic()
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                current_line_spans.push(Span::styled(current_text, style));
+            }
+            
+            styled_content.push(Line::from(current_line_spans));
+        }
+
+        let content = Paragraph::new(styled_content)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: true })
-            .scroll((self.scroll_offset as u16, 0))
-            .style(Style::default().fg(Color::White));
+            .scroll((self.scroll_offset as u16, 0));
 
         f.render_widget(content, main_chunks[1]);
 

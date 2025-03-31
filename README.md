@@ -9,6 +9,7 @@ A terminal user interface (TUI) EPUB reader written in Rust.
 - Navigate between parts
 - Scroll through content
 - Preserve text formatting (paragraphs, emphasis, quotes, etc.)
+- Debug mode for troubleshooting text formatting issues
 
 ## Installation
 
@@ -31,6 +32,7 @@ A terminal user interface (TUI) EPUB reader written in Rust.
    - `h`/`l`: Navigate between parts
    - `Tab`: Switch between file list and content view
    - `Enter`: Select a file to read
+   - `d`: Toggle debug mode (in content view) to see raw text with visible special characters
    - `q`: Quit the application
 
 ## Dependencies

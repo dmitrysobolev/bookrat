@@ -46,6 +46,7 @@ struct App {
     last_scroll_time: std::time::Instant,
     scroll_speed: usize,
     regex: RegexPatterns,
+    debug_mode: bool,
 }
 
 #[derive(PartialEq)]
@@ -98,6 +99,7 @@ impl App {
             last_scroll_time: std::time::Instant::now(),
             scroll_speed: 1,
             regex: RegexPatterns::new(),
+            debug_mode: false,
         }
     }
 
@@ -157,81 +159,89 @@ impl App {
             if let Ok(content) = doc.get_current_str() {
                 debug!("Raw content length: {} bytes", content.len());
                 
-                // First pass: Replace HTML entities
-                let text = content
-                    .replace("&nbsp;", " ")
-                    .replace("&amp;", "&")
-                    .replace("&lt;", "<")
-                    .replace("&gt;", ">")
-                    .replace("&quot;", "\"")
-                    .replace("&apos;", "'")
-                    .replace("&mdash;", "—")
-                    .replace("&ndash;", "–")
-                    .replace("&hellip;", "...")
-                    .replace("&ldquo;", "\u{201C}")  // Opening double quote
-                    .replace("&rdquo;", "\u{201D}")  // Closing double quote
-                    .replace("&lsquo;", "\u{2018}")  // Opening single quote
-                    .replace("&rsquo;", "\u{2019}"); // Closing single quote
-
-                // Remove CSS rules
-                let text = self.regex.css_rule.replace_all(&text, "").to_string();
-
-                // Second pass: Convert semantic HTML elements to plain text with proper formatting
-                let text = self.regex.p_tag.replace_all(&text, "").to_string();
-                
-                let text = text
-                    .replace("</p>", "\n\n")
-                    // Preserve line breaks
-                    .replace("<br>", "\n")
-                    .replace("<br/>", "\n")
-                    .replace("<br />", "\n")
-                    // Handle blockquotes (for direct speech or citations)
-                    .replace("<blockquote>", "\n    ")
-                    .replace("</blockquote>", "\n")
-                    // Handle emphasis
-                    .replace("<em>", "_")
-                    .replace("</em>", "_")
-                    .replace("<i>", "_")
-                    .replace("</i>", "_")
-                    // Handle strong emphasis
-                    .replace("<strong>", "**")
-                    .replace("</strong>", "**")
-                    .replace("<b>", "**")
-                    .replace("</b>", "**");
-
-                // Handle text wrapped in underscores
-                let text = self.regex.italic.replace_all(&text, |caps: &regex::Captures| {
-                    format!("_{}_", caps.get(1).unwrap().as_str())
-                }).to_string();
-
-                // Handle headers
-                let text = self.regex.h_open.replace_all(&text, "\n\n").to_string();
-                let text = self.regex.h_close.replace_all(&text, "\n\n").to_string();
-
-                // Third pass: Remove any remaining HTML tags
-                let text = self.regex.remaining_tags.replace_all(&text, "").to_string();
-
-                // Fourth pass: Clean up whitespace while preserving intentional formatting
-                let text = self.regex.multi_space.replace_all(&text, " ").to_string();
-                let text = self.regex.multi_newline.replace_all(&text, "\n\n").to_string();
-                let text = self.regex.leading_space.replace_all(&text, "").to_string();
-                let text = self.regex.line_leading_space.replace_all(&text, "\n").to_string();
-                
-                // Fifth pass: Collapse multiple empty lines into a single one
-                let text = self.regex.empty_lines.replace_all(&text, "\n\n");
-                
-                let text = text.trim().to_string();
-
-                debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
-                
-                if text.is_empty() {
-                    warn!("Converted text is empty");
-                    self.current_content = Some("No content available in this chapter.".to_string());
-                    self.content_length = 0;
-                } else {
-                    debug!("Final text length: {} bytes", text.len());
+                if self.debug_mode {
+                    // In debug mode, just show the raw content with visible special characters
+                    let text = content;
+                    self.content_length = text.len();
                     self.current_content = Some(text);
-                    self.content_length = self.current_content.as_ref().unwrap().len();
+                } else {
+                    // Normal text processing
+                    // First pass: Replace HTML entities
+                    let text = content
+                        .replace("&nbsp;", " ")
+                        .replace("&amp;", "&")
+                        .replace("&lt;", "<")
+                        .replace("&gt;", ">")
+                        .replace("&quot;", "\"")
+                        .replace("&apos;", "'")
+                        .replace("&mdash;", "—")
+                        .replace("&ndash;", "–")
+                        .replace("&hellip;", "...")
+                        .replace("&ldquo;", "\u{201C}")  // Opening double quote
+                        .replace("&rdquo;", "\u{201D}")  // Closing double quote
+                        .replace("&lsquo;", "\u{2018}")  // Opening single quote
+                        .replace("&rsquo;", "\u{2019}"); // Closing single quote
+
+                    // Remove CSS rules
+                    let text = self.regex.css_rule.replace_all(&text, "").to_string();
+
+                    // Second pass: Convert semantic HTML elements to plain text with proper formatting
+                    let text = self.regex.p_tag.replace_all(&text, "").to_string();
+                    
+                    let text = text
+                        .replace("</p>", "\n\n")
+                        // Preserve line breaks
+                        .replace("<br>", "\n")
+                        .replace("<br/>", "\n")
+                        .replace("<br />", "\n")
+                        // Handle blockquotes (for direct speech or citations)
+                        .replace("<blockquote>", "\n    ")
+                        .replace("</blockquote>", "\n")
+                        // Handle emphasis
+                        .replace("<em>", "_")
+                        .replace("</em>", "_")
+                        .replace("<i>", "_")
+                        .replace("</i>", "_")
+                        // Handle strong emphasis
+                        .replace("<strong>", "**")
+                        .replace("</strong>", "**")
+                        .replace("<b>", "**")
+                        .replace("</b>", "**");
+
+                    // Handle text wrapped in underscores
+                    let text = self.regex.italic.replace_all(&text, |caps: &regex::Captures| {
+                        format!("_{}_", caps.get(1).unwrap().as_str())
+                    }).to_string();
+
+                    // Handle headers
+                    let text = self.regex.h_open.replace_all(&text, "\n\n").to_string();
+                    let text = self.regex.h_close.replace_all(&text, "\n\n").to_string();
+
+                    // Third pass: Remove any remaining HTML tags
+                    let text = self.regex.remaining_tags.replace_all(&text, "").to_string();
+
+                    // Fourth pass: Clean up whitespace while preserving intentional formatting
+                    let text = self.regex.multi_space.replace_all(&text, " ").to_string();
+                    let text = self.regex.multi_newline.replace_all(&text, "\n\n").to_string();
+                    let text = self.regex.leading_space.replace_all(&text, "").to_string();
+                    let text = self.regex.line_leading_space.replace_all(&text, "\n").to_string();
+                    
+                    // Fifth pass: Collapse multiple empty lines into a single one
+                    let text = self.regex.empty_lines.replace_all(&text, "\n\n");
+                    
+                    let text = text.trim().to_string();
+
+                    debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
+                    
+                    if text.is_empty() {
+                        warn!("Converted text is empty");
+                        self.current_content = Some("No content available in this chapter.".to_string());
+                        self.content_length = 0;
+                    } else {
+                        debug!("Final text length: {} bytes", text.len());
+                        self.current_content = Some(text);
+                        self.content_length = self.current_content.as_ref().unwrap().len();
+                    }
                 }
             } else {
                 error!("Failed to get current chapter content");
@@ -499,7 +509,13 @@ impl App {
         // Draw help bar
         let help_text = match self.mode {
             Mode::FileList => "j/k: Navigate | Enter: Select | Tab: Switch View | q: Quit",
-            Mode::Content => "j/k: Scroll | h/l: Change Part | Tab: Switch View | q: Quit",
+            Mode::Content => {
+                if self.debug_mode {
+                    "j/k: Scroll | h/l: Change Part | Tab: Switch View | d: Toggle Debug | q: Quit"
+                } else {
+                    "j/k: Scroll | h/l: Change Part | Tab: Switch View | d: Toggle Debug | q: Quit"
+                }
+            },
         };
         let help = Paragraph::new(help_text)
             .block(Block::default().borders(Borders::ALL))
@@ -610,6 +626,12 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
                             }
                             Mode::FileList
                         };
+                    }
+                    KeyCode::Char('d') => {
+                        if app.mode == Mode::Content {
+                            app.debug_mode = !app.debug_mode;
+                            app.update_content();  // Update content to show raw text
+                        }
                     }
                     _ => {}
                 }

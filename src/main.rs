@@ -1,4 +1,5 @@
 mod bookmark;
+mod regex_patterns;
 
 use std::{
     fs::File,
@@ -24,9 +25,10 @@ use ratatui::{
     Terminal,
 };
 use simplelog::{Config, LevelFilter, WriteLogger};
-use regex;
+use regex::{self, Captures};
 
 use crate::bookmark::Bookmarks;
+use crate::regex_patterns::RegexPatterns;
 
 struct App {
     epub_files: Vec<String>,
@@ -43,17 +45,7 @@ struct App {
     content_length: usize,
     last_scroll_time: std::time::Instant,
     scroll_speed: usize,
-    p_tag_re: regex::Regex,
-    h_open_re: regex::Regex,
-    h_close_re: regex::Regex,
-    remaining_tags_re: regex::Regex,
-    multi_space_re: regex::Regex,
-    multi_newline_re: regex::Regex,
-    leading_space_re: regex::Regex,
-    line_leading_space_re: regex::Regex,
-    empty_lines_re: regex::Regex,
-    italic_re: regex::Regex,
-    css_rule_re: regex::Regex,
+    regex: RegexPatterns,
 }
 
 #[derive(PartialEq)]
@@ -64,29 +56,6 @@ enum Mode {
 
 impl App {
     fn new() -> Self {
-        let p_tag_re = regex::Regex::new(r"<p[^>]*>")
-            .expect("Failed to compile paragraph tag regex");
-        let h_open_re = regex::Regex::new(r"<h[1-6][^>]*>")
-            .expect("Failed to compile header open tag regex");
-        let h_close_re = regex::Regex::new(r"</h[1-6]>")
-            .expect("Failed to compile header close tag regex");
-        let remaining_tags_re = regex::Regex::new(r"<[^>]*>")
-            .expect("Failed to compile remaining tags regex");
-        let multi_space_re = regex::Regex::new(r" +")
-            .expect("Failed to compile multi space regex");
-        let multi_newline_re = regex::Regex::new(r"\n{3,}")
-            .expect("Failed to compile multi newline regex");
-        let leading_space_re = regex::Regex::new(r"^ +")
-            .expect("Failed to compile leading space regex");
-        let line_leading_space_re = regex::Regex::new(r"\n +")
-            .expect("Failed to compile line leading space regex");
-        let empty_lines_re = regex::Regex::new(r"\n\s*\n\s*\n+")
-            .expect("Failed to compile empty lines regex");
-        let italic_re = regex::Regex::new(r"_([^_]+)_")
-            .expect("Failed to compile italic regex");
-        let css_rule_re = regex::Regex::new(r"[a-zA-Z0-9#\.@]+\s*\{[^}]*\}")
-            .expect("Failed to compile CSS rule regex");
-
         let epub_files: Vec<String> = std::fs::read_dir(".")
             .unwrap()
             .filter_map(|entry| {
@@ -128,17 +97,7 @@ impl App {
             content_length: 0,
             last_scroll_time: std::time::Instant::now(),
             scroll_speed: 1,
-            p_tag_re,
-            h_open_re,
-            h_close_re,
-            remaining_tags_re,
-            multi_space_re,
-            multi_newline_re,
-            leading_space_re,
-            line_leading_space_re,
-            empty_lines_re,
-            italic_re,
-            css_rule_re,
+            regex: RegexPatterns::new(),
         }
     }
 
@@ -215,10 +174,10 @@ impl App {
                     .replace("&rsquo;", "\u{2019}"); // Closing single quote
 
                 // Remove CSS rules
-                let text = self.css_rule_re.replace_all(&text, "").to_string();
+                let text = self.regex.css_rule.replace_all(&text, "").to_string();
 
                 // Second pass: Convert semantic HTML elements to plain text with proper formatting
-                let text = self.p_tag_re.replace_all(&text, "").to_string();
+                let text = self.regex.p_tag.replace_all(&text, "").to_string();
                 
                 let text = text
                     .replace("</p>", "\n\n")
@@ -241,25 +200,25 @@ impl App {
                     .replace("</b>", "**");
 
                 // Handle text wrapped in underscores
-                let text = self.italic_re.replace_all(&text, |caps: &regex::Captures| {
+                let text = self.regex.italic.replace_all(&text, |caps: &regex::Captures| {
                     format!("_{}_", caps.get(1).unwrap().as_str())
                 }).to_string();
 
                 // Handle headers
-                let text = self.h_open_re.replace_all(&text, "\n\n").to_string();
-                let text = self.h_close_re.replace_all(&text, "\n\n").to_string();
+                let text = self.regex.h_open.replace_all(&text, "\n\n").to_string();
+                let text = self.regex.h_close.replace_all(&text, "\n\n").to_string();
 
                 // Third pass: Remove any remaining HTML tags
-                let text = self.remaining_tags_re.replace_all(&text, "").to_string();
+                let text = self.regex.remaining_tags.replace_all(&text, "").to_string();
 
                 // Fourth pass: Clean up whitespace while preserving intentional formatting
-                let text = self.multi_space_re.replace_all(&text, " ").to_string();
-                let text = self.multi_newline_re.replace_all(&text, "\n\n").to_string();
-                let text = self.leading_space_re.replace_all(&text, "").to_string();
-                let text = self.line_leading_space_re.replace_all(&text, "\n").to_string();
+                let text = self.regex.multi_space.replace_all(&text, " ").to_string();
+                let text = self.regex.multi_newline.replace_all(&text, "\n\n").to_string();
+                let text = self.regex.leading_space.replace_all(&text, "").to_string();
+                let text = self.regex.line_leading_space.replace_all(&text, "\n").to_string();
                 
                 // Fifth pass: Collapse multiple empty lines into a single one
-                let text = self.empty_lines_re.replace_all(&text, "\n\n");
+                let text = self.regex.empty_lines.replace_all(&text, "\n\n");
                 
                 let text = text.trim().to_string();
 

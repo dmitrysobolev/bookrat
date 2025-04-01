@@ -25,7 +25,7 @@ use ratatui::{
     Terminal,
 };
 use simplelog::{Config, LevelFilter, WriteLogger};
-use regex::{self, Captures};
+use regex::{self};
 
 use crate::bookmark::Bookmarks;
 use crate::regex_patterns::RegexPatterns;
@@ -103,6 +103,85 @@ impl App {
         }
     }
 
+    fn process_html_content(content: &str) -> String {
+        let app = App::new();
+        
+        // Remove CSS rules first
+        let text = app.regex.css_rule.replace_all(content, "").to_string();
+
+        // Handle headers first to preserve their formatting
+        let text = app.regex.h_open.replace_all(&text, "\n").to_string();
+        let text = app.regex.h_close.replace_all(&text, "\n").to_string();
+
+        // Clean up spaces before adding indentation
+        let text = app.regex.multi_space.replace_all(&text, " ").to_string();
+        let text = app.regex.leading_space.replace_all(&text, "").to_string();
+        let text = app.regex.line_leading_space.replace_all(&text, "\n").to_string();
+
+        // Convert semantic HTML elements to plain text with proper formatting
+        // First paragraph should not be indented
+        let mut first_paragraph = true;
+        let text = app.regex.p_tag.replace_all(&text, |_caps: &regex::Captures| {
+            let result = if first_paragraph {
+                first_paragraph = false;
+                "\n"  // First paragraph
+            } else {
+                "\n    "  // Subsequent paragraphs
+            };
+            result
+        }).to_string();
+        
+        let text = text
+            .replace("</p>", "\n")
+            // Preserve line breaks
+            .replace("<br>", "\n")
+            .replace("<br/>", "\n")
+            .replace("<br />", "\n")
+            // Handle blockquotes (for direct speech or citations)
+            .replace("<blockquote>", "\n    ")
+            .replace("</blockquote>", "\n")
+            // Handle emphasis
+            .replace("<em>", "_")
+            .replace("</em>", "_")
+            .replace("<i>", "_")
+            .replace("</i>", "_")
+            // Handle strong emphasis
+            .replace("<strong>", "**")
+            .replace("</strong>", "**")
+            .replace("<b>", "**")
+            .replace("</b>", "**");
+
+        // Handle text wrapped in underscores
+        let text = app.regex.italic.replace_all(&text, |caps: &regex::Captures| {
+            format!("_{}_", caps.get(1).unwrap().as_str())
+        }).to_string();
+
+        // Remove any remaining HTML tags
+        let text = app.regex.remaining_tags.replace_all(&text, "").to_string();
+
+        // Replace HTML entities after removing tags
+        let text = text
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&mdash;", "—")
+            .replace("&ndash;", "–")
+            .replace("&hellip;", "...")
+            .replace("&ldquo;", "\u{201C}")  // Opening double quote
+            .replace("&rdquo;", "\u{201D}")  // Closing double quote
+            .replace("&lsquo;", "\u{2018}")  // Opening single quote
+            .replace("&rsquo;", "\u{2019}"); // Closing single quote
+
+        // Handle empty lines
+        let text = app.regex.empty_lines.replace_all(&text, "\n").to_string();
+        let text = app.regex.multi_newline.replace_all(&text, "\n").to_string();
+        
+        text.trim().to_string()
+    }
+
     fn load_epub(&mut self, path: &str) {
         info!("Attempting to load EPUB: {}", path);
         if let Ok(mut doc) = EpubDoc::new(path) {
@@ -166,71 +245,7 @@ impl App {
                     self.current_content = Some(text);
                 } else {
                     // Normal text processing
-                    // First pass: Replace HTML entities
-                    let text = content
-                        .replace("&nbsp;", " ")
-                        .replace("&amp;", "&")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'")
-                        .replace("&mdash;", "—")
-                        .replace("&ndash;", "–")
-                        .replace("&hellip;", "...")
-                        .replace("&ldquo;", "\u{201C}")  // Opening double quote
-                        .replace("&rdquo;", "\u{201D}")  // Closing double quote
-                        .replace("&lsquo;", "\u{2018}")  // Opening single quote
-                        .replace("&rsquo;", "\u{2019}"); // Closing single quote
-
-                    // Remove CSS rules
-                    let text = self.regex.css_rule.replace_all(&text, "").to_string();
-
-                    // Second pass: Convert semantic HTML elements to plain text with proper formatting
-                    let text = self.regex.p_tag.replace_all(&text, "").to_string();
-                    
-                    let text = text
-                        .replace("</p>", "\n\n")
-                        // Preserve line breaks
-                        .replace("<br>", "\n")
-                        .replace("<br/>", "\n")
-                        .replace("<br />", "\n")
-                        // Handle blockquotes (for direct speech or citations)
-                        .replace("<blockquote>", "\n    ")
-                        .replace("</blockquote>", "\n")
-                        // Handle emphasis
-                        .replace("<em>", "_")
-                        .replace("</em>", "_")
-                        .replace("<i>", "_")
-                        .replace("</i>", "_")
-                        // Handle strong emphasis
-                        .replace("<strong>", "**")
-                        .replace("</strong>", "**")
-                        .replace("<b>", "**")
-                        .replace("</b>", "**");
-
-                    // Handle text wrapped in underscores
-                    let text = self.regex.italic.replace_all(&text, |caps: &regex::Captures| {
-                        format!("_{}_", caps.get(1).unwrap().as_str())
-                    }).to_string();
-
-                    // Handle headers
-                    let text = self.regex.h_open.replace_all(&text, "\n\n").to_string();
-                    let text = self.regex.h_close.replace_all(&text, "\n\n").to_string();
-
-                    // Third pass: Remove any remaining HTML tags
-                    let text = self.regex.remaining_tags.replace_all(&text, "").to_string();
-
-                    // Fourth pass: Clean up whitespace while preserving intentional formatting
-                    let text = self.regex.multi_space.replace_all(&text, " ").to_string();
-                    let text = self.regex.multi_newline.replace_all(&text, "\n\n").to_string();
-                    let text = self.regex.leading_space.replace_all(&text, "").to_string();
-                    let text = self.regex.line_leading_space.replace_all(&text, "\n").to_string();
-                    
-                    // Fifth pass: Collapse multiple empty lines into a single one
-                    let text = self.regex.empty_lines.replace_all(&text, "\n\n");
-                    
-                    let text = text.trim().to_string();
-
+                    let text = Self::process_html_content(&content);
                     debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
                     
                     if text.is_empty() {
@@ -501,7 +516,7 @@ impl App {
 
         let content = Paragraph::new(styled_content)
             .block(Block::default().borders(Borders::ALL).title(title))
-            .wrap(Wrap { trim: true })
+            .wrap(Wrap { trim: false })
             .scroll((self.scroll_offset as u16, 0));
 
         f.render_widget(content, main_chunks[1]);
@@ -640,5 +655,114 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
         if last_tick.elapsed() >= tick_rate {
             last_tick = std::time::Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_formatting() {
+        let test_content = r#"<p>First paragraph with <em>italic</em> text.</p>
+        <p>Second paragraph with <strong>bold</strong> text.</p>
+        <blockquote>A blockquote with <i>italic</i> text.</blockquote>
+        <p>Third paragraph with <b>bold</b> and <em>italic</em> text.</p>
+        <h1>Header 1</h1>
+        <p>Fourth paragraph with &quot;quotes&quot; and &mdash; dash.</p>"#;
+
+        let content = App::process_html_content(test_content);
+        
+        // Test various formatting aspects
+        assert!(content.contains("First paragraph with _italic_ text."));
+        assert!(content.contains("Second paragraph with **bold** text."));
+        assert!(content.contains("    A blockquote with _italic_ text."));
+        assert!(content.contains("Third paragraph with **bold** and _italic_ text."));
+        assert!(content.contains("Header 1"));
+        assert!(content.contains("Fourth paragraph with \"quotes\" and — dash."));
+        
+        // Test that paragraphs are properly separated
+        let paragraphs: Vec<&str> = content.split("\n").collect();
+        assert!(paragraphs.len() >= 4); // Should have at least 4 paragraphs
+        
+        // Test that blockquotes are indented
+        assert!(content.contains("    A blockquote"));
+        
+        // Test that HTML entities are properly converted
+        assert!(!content.contains("&quot;"));
+        assert!(!content.contains("&mdash;"));
+        assert!(content.contains("\""));
+        assert!(content.contains("—"));
+    }
+
+    #[test]
+    fn test_empty_content() {
+        let content = App::process_html_content("");
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn test_html_entities() {
+        let test_content = r#"<p>&amp; &lt; &gt; &apos; &ldquo; &rdquo; &lsquo; &rsquo;</p>"#;
+        let content = App::process_html_content(test_content);
+        
+        // Test HTML entity conversion
+        assert!(content.contains("&"));
+        assert!(content.contains("<"));
+        assert!(content.contains(">"));
+        assert!(content.contains("'"));
+        assert!(content.contains("\u{201C}")); // Opening double quote
+        assert!(content.contains("\u{201D}")); // Closing double quote
+        assert!(content.contains("\u{2018}")); // Opening single quote
+        assert!(content.contains("\u{2019}")); // Closing single quote
+
+        // Test that the content is properly formatted with indentation
+        let expected = format!("& < > ' {} {} {} {}", 
+            '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}');
+        assert_eq!(content.trim(), expected);
+    }
+
+    #[test]
+    fn test_paragraph_indentation() {
+        let test_content = r#"<p>First paragraph</p>
+        <p>Second paragraph</p>
+        <p>Third paragraph</p>"#;
+
+        let content = App::process_html_content(test_content);
+
+        let paragraphs: Vec<&str> = content.split("\n").collect();
+        assert!(paragraphs.len() == 3);
+        
+        // Test that paragraphs are indented with 4 spaces
+        assert!(content.contains("First paragraph"));
+        assert!(content.contains("    Second paragraph"));
+        assert!(content.contains("    Third paragraph"));
+    }
+
+    #[test]
+    fn test_paragraphs_with_empty_lines() {
+        let test_content = r#"<p>First paragraph</p>
+
+        <p>Second paragraph</p>
+
+
+        <p>Third paragraph</p>
+
+        <p>Fourth paragraph</p>"#;
+
+        let content = App::process_html_content(test_content);
+
+        let paragraphs: Vec<&str> = content.split("\n").collect();
+        assert!(paragraphs.len() == 4, "Expected 4 paragraphs, got {}", paragraphs.len());
+        
+        // Test that all paragraphs are present and properly indented
+        assert!(content.contains("First paragraph"));
+        assert!(content.contains("    Second paragraph"));
+        assert!(content.contains("    Third paragraph"));
+        assert!(content.contains("    Fourth paragraph"));
+
+        // Verify the exact content structure
+        let expected = "First paragraph\n    Second paragraph\n    Third paragraph\n    Fourth paragraph";
+        assert_eq!(content, expected, "Content does not match expected format");
     }
 }

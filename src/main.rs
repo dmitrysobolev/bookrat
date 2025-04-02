@@ -121,7 +121,9 @@ impl App {
     }
 
     fn process_html_content(content: &str, regex: &RegexPatterns) -> String {
-        let text = regex.css_rule.replace_all(content, "").to_string();
+        let text = content.replace('\n', "");
+        
+        let text = regex.css_rule.replace_all(&text, "").to_string();
 
         let text = regex.h_open.replace_all(&text, "\n").to_string();
         let text = regex.h_close.replace_all(&text, "\n").to_string();
@@ -132,17 +134,16 @@ impl App {
 
         let mut first_paragraph = true;
         let text = regex.p_tag.replace_all(&text, |_caps: &regex::Captures| {
-            let result = if first_paragraph {
+            if first_paragraph {
                 first_paragraph = false;
-                "\n"
+                ""
             } else {
                 "\n    "
-            };
-            result
+            }
         }).to_string();
         
         let text = text
-            .replace("</p>", "\n")
+            .replace("</p>", "")
             .replace("<br>", "\n")
             .replace("<br/>", "\n")
             .replace("<br />", "\n")
@@ -175,8 +176,12 @@ impl App {
             .replace("&rsquo;", "\u{2019}");
 
         let text = regex.empty_lines.replace_all(&text, "\n").to_string();
-        let text = regex.multi_newline.replace_all(&text, "\n").to_string();
+        let mut text = regex.multi_newline.replace_all(&text, "\n").to_string();
         
+        if text.starts_with("\n    ") {
+            text.replace_range(1..5, "");
+        }
+
         text.trim().to_string()
     }
 

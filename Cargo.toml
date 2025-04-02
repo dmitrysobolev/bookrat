@@ -6,16 +6,18 @@ authors = ["Your Name <your.email@example.com>"]
 description = "A TUI EPUB reader application"
 
 [dependencies]
-ratatui = "0.26.1"
+ratatui = { version = "0.27.0", features = ["crossterm"] }
 crossterm = "0.27.0"
-epub = "1.1.0"
-anyhow = "1.0.79"
-simplelog = "0.12.1"
-html2text = "0.2.1"
-regex = "1.10.3"
-log = "0.4"
+epub = "2.0.0"
+regex = "1.10.5"
+simplelog = "0.12.2"
+log = "0.4.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+dirs = "5.0"
+textwrap = "0.16"
+anyhow = "1.0.79"
+html2text = "0.2.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]

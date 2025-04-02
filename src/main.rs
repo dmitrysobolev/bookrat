@@ -26,6 +26,7 @@ use ratatui::{
 };
 use simplelog::{Config, LevelFilter, WriteLogger};
 use regex::{self};
+use textwrap::{fill, wrap_algorithms::Penalties, Options, WrapAlgorithm};
 
 use crate::bookmark::Bookmarks;
 use crate::regex_patterns::RegexPatterns;
@@ -184,43 +185,69 @@ impl App {
 
     fn load_epub(&mut self, path: &str) {
         info!("Attempting to load EPUB: {}", path);
-        if let Ok(mut doc) = EpubDoc::new(path) {
-            info!("Successfully created EPUB document");
-            self.total_chapters = doc.get_num_pages();
-            info!("Total chapters: {}", self.total_chapters);
-            
-            // Try to load bookmark
-            if let Some(bookmark) = self.bookmarks.get_bookmark(path) {
-                info!("Found bookmark: chapter {}, offset {}", bookmark.chapter, bookmark.scroll_offset);
-                // Skip metadata page if needed
-                if bookmark.chapter > 0 {
-                    for _ in 0..bookmark.chapter {
-                        if doc.go_next().is_err() {
-                            error!("Failed to navigate to bookmarked chapter");
-                            break;
+        match EpubDoc::new(path) {
+            Ok(mut doc) => {
+                info!("Successfully created EPUB document");
+                self.total_chapters = doc.get_num_pages();
+                info!("Total chapters: {}", self.total_chapters);
+
+                // Try to load bookmark
+                if let Some(bookmark) = self.bookmarks.get_bookmark(path) {
+                    info!("Found bookmark: chapter {}, offset {}", bookmark.chapter, bookmark.scroll_offset);
+                    // Navigate to the bookmarked chapter
+                    if bookmark.chapter > 0 {
+                        // Reset to the beginning first
+                        doc.set_current_page(0);
+                        // Move forward
+                        for _ in 0..bookmark.chapter {
+                            if !doc.go_next() {
+                                error!("Failed to navigate to bookmarked chapter at index {}", bookmark.chapter);
+                                // Reset to prevent inconsistent state
+                                doc.set_current_page(0);
+                                self.current_chapter = 0;
+                                self.scroll_offset = 0;
+                                break; // Exit loop on failure
+                            }
+                        }
+                        // Only update state if navigation succeeded up to the bookmark
+                        if doc.get_current_page() == bookmark.chapter {
+                            self.current_chapter = bookmark.chapter;
+                            self.scroll_offset = bookmark.scroll_offset;
+                        } else {
+                             error!("Could not reach bookmarked chapter index {}", bookmark.chapter);
+                             // Fallback to chapter 0 or 1
+                             if self.total_chapters > 1 {
+                                 doc.set_current_page(1);
+                                 self.current_chapter = 1;
+                             } else {
+                                 doc.set_current_page(0);
+                                 self.current_chapter = 0;
+                             }
+                             self.scroll_offset = 0;
                         }
                     }
-                    self.current_chapter = bookmark.chapter;
-                    self.scroll_offset = bookmark.scroll_offset;
-                }
-            } else {
-                // Skip the first chapter if it's just metadata
-                if self.total_chapters > 1 {
-                    if doc.go_next().is_ok() {
-                        self.current_chapter = 1;
-                        info!("Skipped metadata page, moved to chapter 2");
-                    } else {
-                        error!("Failed to move to next chapter");
+                } else {
+                    // Skip the first chapter if it's just metadata (often chapter 0)
+                    if self.total_chapters > 1 {
+                        if doc.go_next() { // Changed from is_ok()
+                            self.current_chapter = 1;
+                            info!("Skipped potential metadata page, moved to chapter 1 (index 1)");
+                        } else {
+                            error!("Failed to move to chapter 1");
+                            // Stay at chapter 0
+                            self.current_chapter = 0;
+                        }
                     }
                 }
+
+                self.current_epub = Some(doc);
+                self.current_file = Some(path.to_string());
+                self.update_content();
+                self.mode = Mode::Content;
             }
-            
-            self.current_epub = Some(doc);
-            self.current_file = Some(path.to_string());
-            self.update_content();
-            self.mode = Mode::Content;
-        } else {
-            error!("Failed to load EPUB: {}", path);
+            Err(e) => {
+                error!("Failed to load EPUB: {}: {}", path, e);
+            }
         }
     }
 
@@ -235,31 +262,32 @@ impl App {
 
     fn update_content(&mut self) {
         if let Some(doc) = &mut self.current_epub {
-            if let Ok(content) = doc.get_current_str() {
+            // Changed from `if let Ok(content)` to `if let Some((content, _mime))`
+            if let Some((content, _mime)) = doc.get_current_str() {
                 debug!("Raw content length: {} bytes", content.len());
-                
+
                 if self.debug_mode {
-                    // In debug mode, just show the raw content with visible special characters
-                    let text = content;
-                    self.content_length = text.len();
-                    self.current_content = Some(text);
+                    // In debug mode, just show the raw content
+                    self.content_length = content.len();
+                    self.current_content = Some(content);
                 } else {
                     // Normal text processing
                     let text = Self::process_html_content(&content);
+                    debug!("Processed text length: {} bytes", text.len());
                     debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
-                    
+
                     if text.is_empty() {
                         warn!("Converted text is empty");
                         self.current_content = Some("No content available in this chapter.".to_string());
                         self.content_length = 0;
                     } else {
-                        debug!("Final text length: {} bytes", text.len());
+                        // Calculate length based on processed text
+                        self.content_length = text.len(); 
                         self.current_content = Some(text);
-                        self.content_length = self.current_content.as_ref().unwrap().len();
                     }
                 }
             } else {
-                error!("Failed to get current chapter content");
+                error!("Failed to get current chapter content for index {}", self.current_chapter);
                 self.current_content = Some("Error reading chapter content.".to_string());
                 self.content_length = 0;
             }
@@ -272,18 +300,18 @@ impl App {
 
     fn next_chapter(&mut self) {
         if let Some(doc) = &mut self.current_epub {
-            if self.current_chapter < self.total_chapters - 1 {
-                if doc.go_next().is_ok() {
+            if self.current_chapter < self.total_chapters.saturating_sub(1) {
+                if doc.go_next() { // Changed from is_ok()
                     self.current_chapter += 1;
-                    info!("Moving to next chapter: {}", self.current_chapter + 1);
+                    info!("Moving to next chapter: {}", self.current_chapter);
                     self.update_content();
                     self.scroll_offset = 0;
                     self.save_bookmark();
                 } else {
-                    error!("Failed to move to next chapter");
+                    error!("Failed to move to next chapter from {}", self.current_chapter);
                 }
             } else {
-                info!("Already at last chapter");
+                info!("Already at last chapter {}", self.current_chapter);
             }
         }
     }
@@ -291,17 +319,17 @@ impl App {
     fn prev_chapter(&mut self) {
         if let Some(doc) = &mut self.current_epub {
             if self.current_chapter > 0 {
-                if doc.go_prev().is_ok() {
+                if doc.go_prev() { // Changed from is_ok()
                     self.current_chapter -= 1;
-                    info!("Moving to previous chapter: {}", self.current_chapter + 1);
+                    info!("Moving to previous chapter: {}", self.current_chapter);
                     self.update_content();
                     self.scroll_offset = 0;
                     self.save_bookmark();
                 } else {
-                    error!("Failed to move to previous chapter");
+                    error!("Failed to move to previous chapter from {}", self.current_chapter);
                 }
             } else {
-                info!("Already at first chapter");
+                info!("Already at first chapter (0)");
             }
         }
     }
@@ -403,50 +431,55 @@ impl App {
         f.render_stateful_widget(files, main_chunks[0], &mut self.list_state.clone());
 
         // Draw content
-        let content = self
+        let content_text = self
             .current_content
             .as_deref()
             .unwrap_or("Select a file to view its content");
-        
-        let title = if self.current_epub.is_some() {
-            let chapter_progress = if self.content_length > 0 {
-                // Get the visible area width and height
-                let visible_width = main_chunks[1].width as usize;
-                let visible_height = main_chunks[1].height as usize;
-                
-                // Calculate total scrollable lines by counting actual content lines
-                let content = self.current_content.as_ref().unwrap();
-                let total_lines = content
-                    .lines()
-                    .filter(|line| !line.trim().is_empty()) // Skip empty lines
-                    .map(|line| {
-                        // Calculate how many terminal lines this content line will take
-                        (line.len() as f32 / visible_width as f32).ceil() as usize
-                    })
-                    .sum::<usize>();
-                
-                // Calculate current visible line based on scroll offset
-                let current_line = self.scroll_offset;
-                
-                // Calculate the maximum scroll position (when last line becomes visible at the bottom)
-                let max_scroll = if total_lines > visible_height {
-                    total_lines - visible_height
+
+        let title = if self.current_epub.is_some() && !self.debug_mode {
+            let chapter_progress = if let Some(ref content) = self.current_content {
+                if !content.is_empty() {
+                    let visible_width = main_chunks[1].width.saturating_sub(2); // Subtract borders
+                    if visible_width > 0 {
+                        // Use textwrap to calculate total lines accurately
+                        let options = Options::new(visible_width as usize)
+                            .word_separator(textwrap::WordSeparator::AsciiSpace)
+                            .wrap_algorithm(WrapAlgorithm::OptimalFit(Penalties::default()));
+                        let wrapped_lines = fill(content, &options);
+                        let total_lines = wrapped_lines.lines().count();
+
+                        // Calculate maximum scrollable lines (total lines - visible height)
+                        let visible_height = main_chunks[1].height.saturating_sub(2); // Subtract borders
+                        let max_scroll_offset = total_lines.saturating_sub(visible_height as usize);
+
+                        // Calculate progress based on current scroll offset
+                        if max_scroll_offset > 0 {
+                            let current_scroll = self.scroll_offset;
+                            ((current_scroll as f32 / max_scroll_offset as f32) * 100.0).min(100.0) as u32
+                        } else {
+                            100 // Content fits or is empty, consider it 100%
+                        }
+                    } else {
+                        0 // No width to display content
+                    }
                 } else {
-                    0
-                };
-                
-                // Calculate percentage based on how far we've scrolled to the max position
-                let progress = if max_scroll > 0 {
-                    ((current_line as f32 / max_scroll as f32) * 100.0).min(100.0) as u32
-                } else {
-                    100 // If content fits in one screen, we're at 100%
-                };
-                
-                progress
+                    0 // Content is empty
+                }
             } else {
-                0
+                0 // No content loaded
             };
-            format!("Part {}/{} | Progress: {}%", self.current_chapter + 1, self.total_chapters, chapter_progress)
+            format!(
+                "Part {}/{} | Progress: {}%",
+                self.current_chapter + 1,
+                self.total_chapters,
+                chapter_progress
+            )
+        } else if self.debug_mode {
+            format!(
+                "Part {}/{} [DEBUG MODE]",
+                self.current_chapter + 1,
+                self.total_chapters
+            )
         } else {
             "Content".to_string()
         };
@@ -456,7 +489,7 @@ impl App {
         let mut is_italic = false;
         let mut is_bold = false;
         
-        for line in content.lines() {
+        for line in content_text.lines() {
             let mut current_line_spans = Vec::new();
             let mut current_text = String::new();
             let mut chars = line.chars().peekable();
@@ -514,12 +547,12 @@ impl App {
             styled_content.push(Line::from(current_line_spans));
         }
 
-        let content = Paragraph::new(styled_content)
+        let content_paragraph = Paragraph::new(styled_content)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false })
             .scroll((self.scroll_offset as u16, 0));
 
-        f.render_widget(content, main_chunks[1]);
+        f.render_widget(content_paragraph, main_chunks[1]);
 
         // Draw help bar
         let help_text = match self.mode {

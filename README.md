@@ -26,7 +26,7 @@ A terminal user interface (TUI) EPUB reader written in Rust.
    ```bash
    cargo run
    ```
-2. Place your EPUB files in the same directory as the executable
+2. **Create a `books` directory** in the same directory as the executable (where you run `cargo run` from). Place your `.epub` files inside this `books` directory.
 3. Use the following controls:
    - `j`/`k`: Navigate file list or scroll content
    - `h`/`l`: Navigate between parts

@@ -154,7 +154,11 @@ impl App {
 
         // Handle text wrapped in underscores
         let text = app.regex.italic.replace_all(&text, |caps: &regex::Captures| {
-            format!("_{}_", caps.get(1).unwrap().as_str())
+            if let Some(capture) = caps.get(1) {
+                format!("_{}_", capture.as_str())
+            } else {
+                caps.get(0).map_or(String::new(), |m| m.as_str().to_string())
+            }
         }).to_string();
 
         // Remove any remaining HTML tags
@@ -262,7 +266,6 @@ impl App {
 
     fn update_content(&mut self) {
         if let Some(doc) = &mut self.current_epub {
-            // Changed from `if let Ok(content)` to `if let Some((content, _mime))`
             if let Some((content, _mime)) = doc.get_current_str() {
                 debug!("Raw content length: {} bytes", content.len());
 
@@ -281,7 +284,7 @@ impl App {
                         self.current_content = Some("No content available in this chapter.".to_string());
                         self.content_length = 0;
                     } else {
-                        // Calculate length based on processed text
+                        // Set content_length based on the final *processed* text
                         self.content_length = text.len(); 
                         self.current_content = Some(text);
                     }
@@ -430,43 +433,43 @@ impl App {
 
         f.render_stateful_widget(files, main_chunks[0], &mut self.list_state.clone());
 
-        // Draw content
-        let content_text = self
+        // Attempt to get the content string, use default if None
+        let content_display_text = self
             .current_content
             .as_deref()
             .unwrap_or("Select a file to view its content");
 
+        // Calculate title and progress only if epub is loaded and content exists
         let title = if self.current_epub.is_some() && !self.debug_mode {
+            // Safely access current_content for progress calculation
             let chapter_progress = if let Some(ref content) = self.current_content {
                 if !content.is_empty() {
-                    let visible_width = main_chunks[1].width.saturating_sub(2); // Subtract borders
+                    let visible_width = main_chunks[1].width.saturating_sub(2);
                     if visible_width > 0 {
-                        // Use textwrap to calculate total lines accurately
+                        // No unwrap here anymore, we are inside `if let Some(ref content)`
                         let options = Options::new(visible_width as usize)
                             .word_separator(textwrap::WordSeparator::AsciiSpace)
                             .wrap_algorithm(WrapAlgorithm::OptimalFit(Penalties::default()));
                         let wrapped_lines = fill(content, &options);
                         let total_lines = wrapped_lines.lines().count();
-
-                        // Calculate maximum scrollable lines (total lines - visible height)
-                        let visible_height = main_chunks[1].height.saturating_sub(2); // Subtract borders
+                        
+                        let visible_height = main_chunks[1].height.saturating_sub(2);
                         let max_scroll_offset = total_lines.saturating_sub(visible_height as usize);
-
-                        // Calculate progress based on current scroll offset
+                        
                         if max_scroll_offset > 0 {
                             let current_scroll = self.scroll_offset;
                             ((current_scroll as f32 / max_scroll_offset as f32) * 100.0).min(100.0) as u32
                         } else {
-                            100 // Content fits or is empty, consider it 100%
+                            100
                         }
                     } else {
-                        0 // No width to display content
+                        0 
                     }
                 } else {
-                    0 // Content is empty
+                    0 
                 }
             } else {
-                0 // No content loaded
+                0 // No content loaded or content is None, progress is 0
             };
             format!(
                 "Part {}/{} | Progress: {}%",
@@ -474,7 +477,7 @@ impl App {
                 self.total_chapters,
                 chapter_progress
             )
-        } else if self.debug_mode {
+        } else if self.debug_mode && self.current_epub.is_some() { // Also check epub exists for debug title
             format!(
                 "Part {}/{} [DEBUG MODE]",
                 self.current_chapter + 1,
@@ -484,69 +487,59 @@ impl App {
             "Content".to_string()
         };
 
-        // Parse content and apply styling
-        let mut styled_content = Vec::new();
-        let mut is_italic = false;
-        let mut is_bold = false;
-        
-        for line in content_text.lines() {
-            let mut current_line_spans = Vec::new();
-            let mut current_text = String::new();
-            let mut chars = line.chars().peekable();
+        // Parse content and apply styling only if content is available
+        let styled_content: Vec<Line> = if let Some(ref content_str) = self.current_content {
+             // Use the actual content string directly
+            let mut styled_lines = Vec::new();
+            let mut is_italic = false;
+            let mut is_bold = false;
             
-            while let Some(c) = chars.next() {
-                if c == '_' {
-                    // If we have accumulated text, add it with current style
-                    if !current_text.is_empty() {
-                        let mut style = Style::default().fg(Color::White);
-                        if is_italic {
-                            style = style.italic();
+            for line in content_str.lines() { // Iterate over the guaranteed Some(content_str)
+                let mut current_line_spans = Vec::new();
+                let mut current_text = String::new();
+                let mut chars = line.chars().peekable();
+                
+                while let Some(c) = chars.next() {
+                    if c == '_' {
+                        if !current_text.is_empty() {
+                            let mut style = Style::default().fg(Color::White);
+                            if is_italic { style = style.italic(); }
+                            if is_bold { style = style.bold(); }
+                            current_line_spans.push(Span::styled(current_text.clone(), style));
+                            current_text.clear();
                         }
-                        if is_bold {
-                            style = style.bold();
+                        is_italic = !is_italic;
+                    } else if c == '*' && chars.peek() == Some(&'*') {
+                        chars.next(); 
+                        if !current_text.is_empty() {
+                            let mut style = Style::default().fg(Color::White);
+                            if is_italic { style = style.italic(); }
+                            if is_bold { style = style.bold(); }
+                            current_line_spans.push(Span::styled(current_text.clone(), style));
+                            current_text.clear();
                         }
-                        current_line_spans.push(Span::styled(current_text.clone(), style));
-                        current_text.clear();
+                        is_bold = !is_bold;
+                    } else {
+                        current_text.push(c);
                     }
-                    // Toggle italic state
-                    is_italic = !is_italic;
-                } else if c == '*' && chars.peek() == Some(&'*') {
-                    // Skip the next * since we've already handled it
-                    chars.next();
-                    // If we have accumulated text, add it with current style
-                    if !current_text.is_empty() {
-                        let mut style = Style::default().fg(Color::White);
-                        if is_italic {
-                            style = style.italic();
-                        }
-                        if is_bold {
-                            style = style.bold();
-                        }
-                        current_line_spans.push(Span::styled(current_text.clone(), style));
-                        current_text.clear();
-                    }
-                    // Toggle bold state
-                    is_bold = !is_bold;
-                } else {
-                    current_text.push(c);
                 }
+                
+                if !current_text.is_empty() {
+                    let mut style = Style::default().fg(Color::White);
+                    if is_italic { style = style.italic(); }
+                    if is_bold { style = style.bold(); }
+                    current_line_spans.push(Span::styled(current_text, style));
+                }
+                
+                styled_lines.push(Line::from(current_line_spans));
             }
-            
-            // Add any remaining text with current style
-            if !current_text.is_empty() {
-                let mut style = Style::default().fg(Color::White);
-                if is_italic {
-                    style = style.italic();
-                }
-                if is_bold {
-                    style = style.bold();
-                }
-                current_line_spans.push(Span::styled(current_text, style));
-            }
-            
-            styled_content.push(Line::from(current_line_spans));
-        }
+            styled_lines // Return the processed lines
+        } else {
+            // If self.current_content is None, create a default message
+            vec![Line::from(content_display_text)] // Use the text derived from unwrap_or earlier
+        };
 
+        // Create the paragraph widget
         let content_paragraph = Paragraph::new(styled_content)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false })

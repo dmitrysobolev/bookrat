@@ -3,12 +3,12 @@ mod regex_patterns;
 
 use std::{
     fs::File,
-    io::{stdout, BufReader},
+    io::{stdout, BufReader, Stdout},
     time::Duration,
     path::Path,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -57,114 +57,108 @@ enum Mode {
 }
 
 impl App {
-    fn new() -> Self {
-        let epub_files: Vec<String> = std::fs::read_dir(".")
-            .unwrap()
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension()?.to_str()? == "epub" {
-                    // Store full path for internal use
-                    Some(path.to_str()?.to_string())
-                } else {
-                    None
+    fn new() -> Result<Self> {
+        let bookmarks = Bookmarks::load().context("Failed to load bookmarks")?;
+
+        let mut epub_files = Vec::new();
+        let books_dir = "./books";
+        
+        let entries = std::fs::read_dir(books_dir)
+            .with_context(|| format!("Failed to read directory: {}", books_dir))?;
+
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!("Failed to process directory entry: {}", e);
+                    continue;
                 }
-            })
-            .collect();
+            };
+
+            let path = entry.path();
+
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "epub" {
+                        if let Some(path_str) = path.to_str() {
+                            epub_files.push(path_str.to_string());
+                        } else {
+                            warn!("Failed to convert path to string: {:?}", path);
+                        }
+                    }
+                }
+            }
+        }
+
+        epub_files.sort();
+        info!("Found EPUB files: {:?}", epub_files);
 
         let mut list_state = ListState::default();
-        // Select first book if available
-        let has_files = !epub_files.is_empty();
-        if has_files {
+        if !epub_files.is_empty() {
             list_state.select(Some(0));
         }
+        
+        let regex = RegexPatterns::new(); 
 
-        let bookmarks = Bookmarks::load().unwrap_or_else(|e| {
-            error!("Failed to load bookmarks: {}", e);
-            Bookmarks::new()
-        });
-
-        Self {
-            epub_files: epub_files.clone(),
-            selected: if has_files { 0 } else { 0 },
-            current_content: None,
+        Ok(Self {
+            mode: Mode::FileList,
             list_state,
+            epub_files,
+            selected: 0,
             current_epub: None,
+            current_file: None,
+            current_content: None,
+            content_length: 0,
+            scroll_offset: 0,
             current_chapter: 0,
             total_chapters: 0,
-            scroll_offset: 0,
-            mode: Mode::FileList,
             bookmarks,
-            current_file: None,
-            content_length: 0,
             last_scroll_time: std::time::Instant::now(),
             scroll_speed: 1,
-            regex: RegexPatterns::new(),
             debug_mode: false,
-        }
+            regex,
+        })
     }
 
-    fn process_html_content(content: &str) -> String {
-        let app = App::new();
-        
-        // Remove CSS rules first
-        let text = app.regex.css_rule.replace_all(content, "").to_string();
+    fn process_html_content(content: &str, regex: &RegexPatterns) -> String {
+        let text = regex.css_rule.replace_all(content, "").to_string();
 
-        // Handle headers first to preserve their formatting
-        let text = app.regex.h_open.replace_all(&text, "\n").to_string();
-        let text = app.regex.h_close.replace_all(&text, "\n").to_string();
+        let text = regex.h_open.replace_all(&text, "\n").to_string();
+        let text = regex.h_close.replace_all(&text, "\n").to_string();
 
-        // Clean up spaces before adding indentation
-        let text = app.regex.multi_space.replace_all(&text, " ").to_string();
-        let text = app.regex.leading_space.replace_all(&text, "").to_string();
-        let text = app.regex.line_leading_space.replace_all(&text, "\n").to_string();
+        let text = regex.multi_space.replace_all(&text, " ").to_string();
+        let text = regex.leading_space.replace_all(&text, "").to_string();
+        let text = regex.line_leading_space.replace_all(&text, "\n").to_string();
 
-        // Convert semantic HTML elements to plain text with proper formatting
-        // First paragraph should not be indented
         let mut first_paragraph = true;
-        let text = app.regex.p_tag.replace_all(&text, |_caps: &regex::Captures| {
+        let text = regex.p_tag.replace_all(&text, |_caps: &regex::Captures| {
             let result = if first_paragraph {
                 first_paragraph = false;
-                "\n"  // First paragraph
+                "\n"
             } else {
-                "\n    "  // Subsequent paragraphs
+                "\n    "
             };
             result
         }).to_string();
         
         let text = text
             .replace("</p>", "\n")
-            // Preserve line breaks
             .replace("<br>", "\n")
             .replace("<br/>", "\n")
             .replace("<br />", "\n")
-            // Handle blockquotes (for direct speech or citations)
             .replace("<blockquote>", "\n    ")
             .replace("</blockquote>", "\n")
-            // Handle emphasis
             .replace("<em>", "_")
             .replace("</em>", "_")
             .replace("<i>", "_")
             .replace("</i>", "_")
-            // Handle strong emphasis
             .replace("<strong>", "**")
             .replace("</strong>", "**")
             .replace("<b>", "**")
             .replace("</b>", "**");
 
-        // Handle text wrapped in underscores
-        let text = app.regex.italic.replace_all(&text, |caps: &regex::Captures| {
-            if let Some(capture) = caps.get(1) {
-                format!("_{}_", capture.as_str())
-            } else {
-                caps.get(0).map_or(String::new(), |m| m.as_str().to_string())
-            }
-        }).to_string();
+        let text = regex.remaining_tags.replace_all(&text, "").to_string();
 
-        // Remove any remaining HTML tags
-        let text = app.regex.remaining_tags.replace_all(&text, "").to_string();
-
-        // Replace HTML entities after removing tags
         let text = text
             .replace("&nbsp;", " ")
             .replace("&amp;", "&")
@@ -175,14 +169,13 @@ impl App {
             .replace("&mdash;", "—")
             .replace("&ndash;", "–")
             .replace("&hellip;", "...")
-            .replace("&ldquo;", "\u{201C}")  // Opening double quote
-            .replace("&rdquo;", "\u{201D}")  // Closing double quote
-            .replace("&lsquo;", "\u{2018}")  // Opening single quote
-            .replace("&rsquo;", "\u{2019}"); // Closing single quote
+            .replace("&ldquo;", "\u{201C}")
+            .replace("&rdquo;", "\u{201D}")
+            .replace("&lsquo;", "\u{2018}")
+            .replace("&rsquo;", "\u{2019}");
 
-        // Handle empty lines
-        let text = app.regex.empty_lines.replace_all(&text, "\n").to_string();
-        let text = app.regex.multi_newline.replace_all(&text, "\n").to_string();
+        let text = regex.empty_lines.replace_all(&text, "\n").to_string();
+        let text = regex.multi_newline.replace_all(&text, "\n").to_string();
         
         text.trim().to_string()
     }
@@ -195,31 +188,24 @@ impl App {
                 self.total_chapters = doc.get_num_pages();
                 info!("Total chapters: {}", self.total_chapters);
 
-                // Try to load bookmark
                 if let Some(bookmark) = self.bookmarks.get_bookmark(path) {
                     info!("Found bookmark: chapter {}, offset {}", bookmark.chapter, bookmark.scroll_offset);
-                    // Navigate to the bookmarked chapter
                     if bookmark.chapter > 0 {
-                        // Reset to the beginning first
                         doc.set_current_page(0);
-                        // Move forward
                         for _ in 0..bookmark.chapter {
                             if !doc.go_next() {
                                 error!("Failed to navigate to bookmarked chapter at index {}", bookmark.chapter);
-                                // Reset to prevent inconsistent state
                                 doc.set_current_page(0);
                                 self.current_chapter = 0;
                                 self.scroll_offset = 0;
-                                break; // Exit loop on failure
+                                break;
                             }
                         }
-                        // Only update state if navigation succeeded up to the bookmark
                         if doc.get_current_page() == bookmark.chapter {
                             self.current_chapter = bookmark.chapter;
                             self.scroll_offset = bookmark.scroll_offset;
                         } else {
                              error!("Could not reach bookmarked chapter index {}", bookmark.chapter);
-                             // Fallback to chapter 0 or 1
                              if self.total_chapters > 1 {
                                  doc.set_current_page(1);
                                  self.current_chapter = 1;
@@ -231,14 +217,12 @@ impl App {
                         }
                     }
                 } else {
-                    // Skip the first chapter if it's just metadata (often chapter 0)
                     if self.total_chapters > 1 {
-                        if doc.go_next() { // Changed from is_ok()
+                        if doc.go_next() {
                             self.current_chapter = 1;
                             info!("Skipped potential metadata page, moved to chapter 1 (index 1)");
                         } else {
                             error!("Failed to move to chapter 1");
-                            // Stay at chapter 0
                             self.current_chapter = 0;
                         }
                     }
@@ -270,12 +254,10 @@ impl App {
                 debug!("Raw content length: {} bytes", content.len());
 
                 if self.debug_mode {
-                    // In debug mode, just show the raw content
                     self.content_length = content.len();
                     self.current_content = Some(content);
                 } else {
-                    // Normal text processing
-                    let text = Self::process_html_content(&content);
+                    let text = Self::process_html_content(&content, &self.regex);
                     debug!("Processed text length: {} bytes", text.len());
                     debug!("Text after HTML cleanup: {}", text.chars().take(100).collect::<String>());
 
@@ -284,7 +266,6 @@ impl App {
                         self.current_content = Some("No content available in this chapter.".to_string());
                         self.content_length = 0;
                     } else {
-                        // Set content_length based on the final *processed* text
                         self.content_length = text.len(); 
                         self.current_content = Some(text);
                     }
@@ -304,7 +285,7 @@ impl App {
     fn next_chapter(&mut self) {
         if let Some(doc) = &mut self.current_epub {
             if self.current_chapter < self.total_chapters.saturating_sub(1) {
-                if doc.go_next() { // Changed from is_ok()
+                if doc.go_next() {
                     self.current_chapter += 1;
                     info!("Moving to next chapter: {}", self.current_chapter);
                     self.update_content();
@@ -322,7 +303,7 @@ impl App {
     fn prev_chapter(&mut self) {
         if let Some(doc) = &mut self.current_epub {
             if self.current_chapter > 0 {
-                if doc.go_prev() { // Changed from is_ok()
+                if doc.go_prev() {
                     self.current_chapter -= 1;
                     info!("Moving to previous chapter: {}", self.current_chapter);
                     self.update_content();
@@ -339,18 +320,14 @@ impl App {
 
     fn scroll_down(&mut self) {
         if let Some(content) = &self.current_content {
-            // Check if we're scrolling continuously
             let now = std::time::Instant::now();
             if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
-                // Increase scroll speed up to a maximum
                 self.scroll_speed = (self.scroll_speed + 1).min(10);
             } else {
-                // Reset scroll speed if there was a pause
                 self.scroll_speed = 1;
             }
             self.last_scroll_time = now;
 
-            // Apply scroll with current speed
             self.scroll_offset = self.scroll_offset.saturating_add(self.scroll_speed);
             let total_lines = content.lines().count();
             debug!("Scrolling down to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
@@ -360,18 +337,14 @@ impl App {
 
     fn scroll_up(&mut self) {
         if let Some(content) = &self.current_content {
-            // Check if we're scrolling continuously
             let now = std::time::Instant::now();
             if now.duration_since(self.last_scroll_time) < std::time::Duration::from_millis(100) {
-                // Increase scroll speed up to a maximum
                 self.scroll_speed = (self.scroll_speed + 1).min(10);
             } else {
-                // Reset scroll speed if there was a pause
                 self.scroll_speed = 1;
             }
             self.last_scroll_time = now;
 
-            // Apply scroll with current speed
             self.scroll_offset = self.scroll_offset.saturating_sub(self.scroll_speed);
             let total_lines = content.lines().count();
             debug!("Scrolling up to offset: {}/{} (speed: {})", self.scroll_offset, total_lines, self.scroll_speed);
@@ -396,7 +369,6 @@ impl App {
             ])
             .split(chunks[0]);
 
-        // Draw file list
         let items: Vec<ListItem> = self
             .epub_files
             .iter()
@@ -406,7 +378,6 @@ impl App {
                     .map(|b| b.last_read.format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "Never".to_string());
                 
-                // Get filename without path and extension for display
                 let display_name = Path::new(file)
                     .file_stem()
                     .unwrap_or_default()
@@ -433,20 +404,16 @@ impl App {
 
         f.render_stateful_widget(files, main_chunks[0], &mut self.list_state.clone());
 
-        // Attempt to get the content string, use default if None
         let content_display_text = self
             .current_content
             .as_deref()
             .unwrap_or("Select a file to view its content");
 
-        // Calculate title and progress only if epub is loaded and content exists
         let title = if self.current_epub.is_some() && !self.debug_mode {
-            // Safely access current_content for progress calculation
             let chapter_progress = if let Some(ref content) = self.current_content {
                 if !content.is_empty() {
                     let visible_width = main_chunks[1].width.saturating_sub(2);
                     if visible_width > 0 {
-                        // No unwrap here anymore, we are inside `if let Some(ref content)`
                         let options = Options::new(visible_width as usize)
                             .word_separator(textwrap::WordSeparator::AsciiSpace)
                             .wrap_algorithm(WrapAlgorithm::OptimalFit(Penalties::default()));
@@ -469,7 +436,7 @@ impl App {
                     0 
                 }
             } else {
-                0 // No content loaded or content is None, progress is 0
+                0
             };
             format!(
                 "Part {}/{} | Progress: {}%",
@@ -477,7 +444,7 @@ impl App {
                 self.total_chapters,
                 chapter_progress
             )
-        } else if self.debug_mode && self.current_epub.is_some() { // Also check epub exists for debug title
+        } else if self.debug_mode && self.current_epub.is_some() {
             format!(
                 "Part {}/{} [DEBUG MODE]",
                 self.current_chapter + 1,
@@ -487,14 +454,12 @@ impl App {
             "Content".to_string()
         };
 
-        // Parse content and apply styling only if content is available
         let styled_content: Vec<Line> = if let Some(ref content_str) = self.current_content {
-             // Use the actual content string directly
             let mut styled_lines = Vec::new();
             let mut is_italic = false;
             let mut is_bold = false;
             
-            for line in content_str.lines() { // Iterate over the guaranteed Some(content_str)
+            for line in content_str.lines() {
                 let mut current_line_spans = Vec::new();
                 let mut current_text = String::new();
                 let mut chars = line.chars().peekable();
@@ -533,13 +498,11 @@ impl App {
                 
                 styled_lines.push(Line::from(current_line_spans));
             }
-            styled_lines // Return the processed lines
+            styled_lines
         } else {
-            // If self.current_content is None, create a default message
-            vec![Line::from(content_display_text)] // Use the text derived from unwrap_or earlier
+            vec![Line::from(content_display_text)]
         };
 
-        // Create the paragraph widget
         let content_paragraph = Paragraph::new(styled_content)
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false })
@@ -547,7 +510,6 @@ impl App {
 
         f.render_widget(content_paragraph, main_chunks[1]);
 
-        // Draw help bar
         let help_text = match self.mode {
             Mode::FileList => "j/k: Navigate | Enter: Select | Tab: Switch View | q: Quit",
             Mode::Content => {
@@ -565,8 +527,25 @@ impl App {
     }
 }
 
+fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+    enable_raw_mode().context("Failed to enable raw mode")?;
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
+    let backend = CrosstermBackend::new(stdout);
+    Terminal::new(backend).context("Failed to create terminal")
+}
+
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+    disable_raw_mode().context("Failed to disable raw mode")?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    ).context("Failed to leave alternate screen/disable mouse capture")?;
+    terminal.show_cursor().context("Failed to show cursor")
+}
+
 fn main() -> Result<()> {
-    // Initialize logging
     WriteLogger::init(
         LevelFilter::Debug,
         Config::default(),
@@ -575,32 +554,21 @@ fn main() -> Result<()> {
 
     info!("Starting BookRat EPUB reader");
 
-    // Terminal initialization
-    enable_raw_mode()?;
-    let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut app = App::new()?;
 
-    // Create app and run it
-    let mut app = App::new();
-    let res = run_app(&mut terminal, &mut app);
+    let mut terminal = setup_terminal()?;
 
-    // Restore terminal
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    let result = run_app(&mut terminal, &mut app);
 
-    if let Err(err) = res {
-        error!("Application error: {:?}", err);
-        println!("{err:?}");
+    restore_terminal(&mut terminal)?;
+
+    if let Err(err) = result {
+        eprintln!("Error: {:?}", err);
+        error!("Application runtime error: {:?}", err);
+        return Err(err);
     }
 
-    info!("Shutting down BookRat");
+    info!("Shutting down BookRat cleanly");
     Ok(())
 }
 
@@ -658,7 +626,6 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
                         app.mode = if app.mode == Mode::FileList {
                             Mode::Content
                         } else {
-                            // When switching back to file list, restore selection to current file
                             if let Some(current_file) = &app.current_file {
                                 if let Some(pos) = app.epub_files.iter().position(|f| f == current_file) {
                                     app.selected = pos;
@@ -671,7 +638,7 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
                     KeyCode::Char('d') => {
                         if app.mode == Mode::Content {
                             app.debug_mode = !app.debug_mode;
-                            app.update_content();  // Update content to show raw text
+                            app.update_content();
                         }
                     }
                     _ => {}
@@ -688,85 +655,81 @@ fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut A
 mod tests {
     use super::*;
 
+    fn get_test_regex() -> RegexPatterns {
+        RegexPatterns::new()
+    }
+
     #[test]
     fn test_html_formatting() {
-        let test_content = r#"<p>First paragraph with <em>italic</em> text.</p>
-        <p>Second paragraph with <strong>bold</strong> text.</p>
-        <blockquote>A blockquote with <i>italic</i> text.</blockquote>
-        <p>Third paragraph with <b>bold</b> and <em>italic</em> text.</p>
-        <h1>Header 1</h1>
-        <p>Fourth paragraph with &quot;quotes&quot; and &mdash; dash.</p>"#;
+        let regex = get_test_regex();
+        let test_content = r#"
+            <h1>Header 1</h1>
+            <p>First paragraph with <em>italic</em> text.</p>
+            <p>Second paragraph with <strong>bold</strong> text.</p>
+            <blockquote>A blockquote</blockquote>
+            <p>Third paragraph with <br/> line break.</p>
+            <p>Fourth paragraph with &quot;quotes&quot; and &mdash; dash.</p>
+        "#;
 
-        let content = App::process_html_content(test_content);
-        
-        // Test various formatting aspects
+        let content = App::process_html_content(test_content, &regex);
+
+        assert!(content.contains("Header 1"));
         assert!(content.contains("First paragraph with _italic_ text."));
         assert!(content.contains("Second paragraph with **bold** text."));
-        assert!(content.contains("    A blockquote with _italic_ text."));
-        assert!(content.contains("Third paragraph with **bold** and _italic_ text."));
-        assert!(content.contains("Header 1"));
+        assert!(content.contains("Third paragraph with \n line break."));
         assert!(content.contains("Fourth paragraph with \"quotes\" and — dash."));
-        
-        // Test that paragraphs are properly separated
-        let paragraphs: Vec<&str> = content.split("\n").collect();
-        assert!(paragraphs.len() >= 4); // Should have at least 4 paragraphs
-        
-        // Test that blockquotes are indented
+        let paragraphs: Vec<&str> = content.split('\n').collect();
+        assert!(paragraphs.len() >= 5);
         assert!(content.contains("    A blockquote"));
-        
-        // Test that HTML entities are properly converted
         assert!(!content.contains("&quot;"));
         assert!(!content.contains("&mdash;"));
-        assert!(content.contains("\""));
-        assert!(content.contains("—"));
+        assert!(!content.contains("<em>"));
+        assert!(!content.contains("<strong>"));
     }
 
     #[test]
     fn test_empty_content() {
-        let content = App::process_html_content("");
-        assert_eq!(content, "");
+        let regex = get_test_regex();
+        let test_content = "";
+        let content = App::process_html_content(test_content, &regex);
+        assert!(content.is_empty());
     }
 
     #[test]
     fn test_html_entities() {
+        let regex = get_test_regex();
         let test_content = r#"<p>&amp; &lt; &gt; &apos; &ldquo; &rdquo; &lsquo; &rsquo;</p>"#;
-        let content = App::process_html_content(test_content);
-        
-        // Test HTML entity conversion
+        let content = App::process_html_content(test_content, &regex);
+
         assert!(content.contains("&"));
         assert!(content.contains("<"));
         assert!(content.contains(">"));
         assert!(content.contains("'"));
-        assert!(content.contains("\u{201C}")); // Opening double quote
-        assert!(content.contains("\u{201D}")); // Closing double quote
-        assert!(content.contains("\u{2018}")); // Opening single quote
-        assert!(content.contains("\u{2019}")); // Closing single quote
-
-        // Test that the content is properly formatted with indentation
+        assert!(content.contains("\u{201C}"));
+        assert!(content.contains("\u{201D}"));
+        assert!(content.contains("\u{2018}"));
+        assert!(content.contains("\u{2019}"));
         let expected = format!("& < > ' {} {} {} {}", 
             '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}');
-        assert_eq!(content.trim(), expected);
+        assert_eq!(content, expected);
     }
 
     #[test]
     fn test_paragraph_indentation() {
-        let test_content = r#"<p>First paragraph</p>
-        <p>Second paragraph</p>
-        <p>Third paragraph</p>"#;
+        let regex = get_test_regex();
+        let test_content = r#"<p>First paragraph</p><p>Second paragraph</p><p>Third paragraph</p>"#;
+        let content = App::process_html_content(test_content, &regex);
 
-        let content = App::process_html_content(test_content);
-
-        let paragraphs: Vec<&str> = content.split("\n").collect();
+        let paragraphs: Vec<&str> = content.split('\n').collect();
         assert!(paragraphs.len() == 3);
-        
-        // Test that paragraphs are indented with 4 spaces
-        assert!(content.contains("First paragraph"));
-        assert!(content.contains("    Second paragraph"));
-        assert!(content.contains("    Third paragraph"));
+        assert!(content.starts_with("First paragraph"));
+        assert!(content.contains("\n    Second paragraph"));
+        assert!(content.contains("\n    Third paragraph"));
     }
 
     #[test]
     fn test_paragraphs_with_empty_lines() {
+        let regex = get_test_regex();
         let test_content = r#"<p>First paragraph</p>
 
         <p>Second paragraph</p>
@@ -775,19 +738,14 @@ mod tests {
         <p>Third paragraph</p>
 
         <p>Fourth paragraph</p>"#;
-
-        let content = App::process_html_content(test_content);
+        let content = App::process_html_content(test_content, &regex);
 
         let paragraphs: Vec<&str> = content.split("\n").collect();
         assert!(paragraphs.len() == 4, "Expected 4 paragraphs, got {}", paragraphs.len());
-        
-        // Test that all paragraphs are present and properly indented
         assert!(content.contains("First paragraph"));
         assert!(content.contains("    Second paragraph"));
         assert!(content.contains("    Third paragraph"));
         assert!(content.contains("    Fourth paragraph"));
-
-        // Verify the exact content structure
         let expected = "First paragraph\n    Second paragraph\n    Third paragraph\n    Fourth paragraph";
         assert_eq!(content, expected, "Content does not match expected format");
     }

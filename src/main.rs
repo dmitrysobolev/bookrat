@@ -98,7 +98,8 @@ impl App {
             list_state.select(Some(0));
         }
         
-        let regex = RegexPatterns::new(); 
+        let regex = RegexPatterns::new()
+            .context("Failed to compile regex patterns")?;
 
         Ok(Self {
             mode: Mode::FileList,
